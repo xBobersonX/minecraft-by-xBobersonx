@@ -95,7 +95,7 @@
     }
   },
   "bundled": [
-    { "project": "bobrconfig", "file": "bundled/bobr-config-0.1.0-1.21.11.jar", "versions": ["1.21.11"] },
-    { "project": "bobrconfig", "file": "bundled/bobr-config-0.1.0-1.8.9.jar", "versions": ["1.8.9"] }
+    { "project": "bobrconfig", "file": "bundled/bobr-config-0.2.0-1.21.11.jar", "versions": ["1.21.11"] },
+    { "project": "bobrconfig", "file": "bundled/bobr-config-0.2.0-1.8.9.jar", "versions": ["1.8.9"] }
   ]
 }
