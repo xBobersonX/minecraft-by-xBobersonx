@@ -744,6 +744,25 @@ ipcMain.handle("background:reset", () => {
 // Tło menu w grze (mod Bobr Config): to samo co tło launchera, zapisane jako PNG
 // w <wersja>/bobrmc/menu-background.png. Bez własnego tła plik jest usuwany i mod pokazuje domyślne tło BobrMC.
 const MENU_BACKGROUND = path.join("bobrmc", "menu-background.png");
+
+// Paczka 1.8.9: OneConfig zostaje tylko jako biblioteka Patchera. Ustawienia są w menu Bobr Config,
+// więc klawisz menu OneConfig (prawy Shift) jest odpinany przed każdym startem. OneConfig trzyma pliki
+// w folderze głównym launchera (tam, gdzie gra jest uruchamiana).
+function hideOneConfigMenu() {
+  const file = path.join(GAME_DIR, "OneConfig", "Preferences.json");
+  try {
+    let prefs = {};
+    if (fs.existsSync(file)) prefs = JSON.parse(fs.readFileSync(file, "utf8"));
+    const keys = prefs.oneConfigKeyBind && prefs.oneConfigKeyBind.keyBinds;
+    if (Array.isArray(keys) && keys.length === 0) return;
+    prefs.oneConfigKeyBind = { keyBinds: [] };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(prefs, null, 2));
+    send("game:log", "[paczka] Menu OneConfig ukryte — ustawienia są w Bobr Config (prawy Shift)");
+  } catch (err) {
+    send("game:log", `[paczka] Nie udało się ukryć menu OneConfig: ${err.message}`);
+  }
+}
 function syncMenuBackground(gameDir) {
   const target = path.join(gameDir, MENU_BACKGROUND);
   try {
@@ -842,6 +861,7 @@ ipcMain.handle("game:launch", async (_e, { nick, version, ram, loader, window: g
     // Fabric nie czyta podfolderów mods/, więc wskazujemy mu preinstalled/ wprost;
     // Forge sam wczytuje mods/<wersja gry>/
     if (!forge) jvmArgs.push(`-Dfabric.addMods=${preinstalled}`);
+    else hideOneConfigMenu();
   }
 
   // wspólne ustawienia dla wszystkich wersji: options.txt (1.8.9 w przeliczonym formacie),

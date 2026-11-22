@@ -69,7 +69,6 @@
     "smooth-skies",
     "smooth-swapping",
     "statuseffecttimer",
-    "polytime",
     "cpvp",
     "sillys-auto-totem",
     "simple-voice-chat",
@@ -85,17 +84,12 @@
       "mods": [
         "patcher",
         "entityculling",
-        "animations",
-        "polysprint",
-        "evergreenhud",
-        "chatting",
-        "crashpatch",
         "3dskinlayers"
       ]
     }
   },
   "bundled": [
-    { "project": "bobrconfig", "file": "bundled/bobr-config-0.2.0-1.21.11.jar", "versions": ["1.21.11"] },
-    { "project": "bobrconfig", "file": "bundled/bobr-config-0.2.0-1.8.9.jar", "versions": ["1.8.9"] }
+    { "project": "bobrconfig", "file": "bundled/bobr-config-0.3.0-1.21.11.jar", "versions": ["1.21.11"] },
+    { "project": "bobrconfig", "file": "bundled/bobr-config-0.3.0-1.8.9.jar", "versions": ["1.8.9"] }
   ]
 }
