@@ -280,9 +280,10 @@ ipcMain.handle("home:worlds", (_e, { version, instance }) => {
 function installedVersions() {
   const dir = path.join(GAME_DIR, "instances");
   if (!fs.existsSync(dir)) return [];
+  // "1.21.11" = paczka Fabric (albo stary Forge), "forge:1.20.1" = paczka na nowym Forge
   return fs.readdirSync(dir)
-    .filter(n => n.startsWith("pack-") && fs.existsSync(path.join(dir, n, ".xbobersonx-pack.json")))
-    .map(n => n.slice("pack-".length));
+    .filter(n => /^(pack|forge)-/.test(n) && fs.existsSync(path.join(dir, n, ".xbobersonx-pack.json")))
+    .map(n => n.startsWith("pack-") ? n.slice("pack-".length) : `forge:${n.slice("forge-".length)}`);
 }
 
 ipcMain.handle("versions:list", async () => {
@@ -357,6 +358,135 @@ async function installForge(build) {
   return file;
 }
 
+// ---------- Nowy Forge (1.20 i wyżej) ----------
+// Od 1.13 Forge nie ma gotowego pliku „universal”: instalator musi raz przerobić pliki gry.
+// Uruchamiamy go w tle (java -jar installer --installClient), a on zapisuje profil versions/<mc>-forge-<build>/,
+// który minecraft-launcher-core uruchamia jak każdy własny profil (version.custom).
+const FORGE_PROMOS = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
+
+function forgeModernFrom() {
+  return (require("./modpack.json").forgeModern || {}).from || null;
+}
+
+function versionAtLeast(version, min) {
+  const a = String(version).split(".").map(Number), b = String(min).split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return true;
+}
+
+// { "1.20.1": "47.4.28", ... } — zalecany build, a bez niego najnowszy; tylko wersje od „from”
+async function modernForgeBuilds() {
+  const from = forgeModernFrom();
+  if (!from) return {};
+  const { data } = await cachedJson(FORGE_PROMOS, "forge_promotions");
+  const builds = {};
+  for (const [key, build] of Object.entries(data.promos || {})) {
+    const m = /^(\d+\.\d+(?:\.\d+)?)-(recommended|latest)$/.exec(key);
+    if (!m || !versionAtLeast(m[1], from)) continue;
+    if (m[2] === "recommended" || !builds[m[1]]) builds[m[1]] = build;
+  }
+  return builds;
+}
+
+ipcMain.handle("forge:modern", async () => {
+  try { return Object.keys(await modernForgeBuilds()); } catch { return []; }
+});
+
+// Znacznik zapisywany dopiero po udanej instalacji: instalator tworzy profil przed przerobieniem plików gry,
+// więc sam profil po przerwanej instalacji (zamknięty launcher) nie znaczy, że Forge działa
+const FORGE_DONE = ".bobrmc-installed";
+
+function savedForgeProfile(gameVersion) {
+  const dir = path.join(GAME_DIR, "versions");
+  if (!fs.existsSync(dir)) return null;
+  const saved = fs.readdirSync(dir)
+    .filter(n => n.startsWith(`${gameVersion}-forge-`) && fs.existsSync(path.join(dir, n, FORGE_DONE)))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return saved.length ? saved[saved.length - 1] : null;
+}
+
+// Instaluje (raz) Forge dla danej wersji gry i zwraca id profilu, np. "1.20.1-forge-47.4.28"
+async function installModernForge(gameVersion, javaPath) {
+  let build;
+  try {
+    build = (await modernForgeBuilds())[gameVersion];
+  } catch {}
+  if (!build) {
+    const saved = savedForgeProfile(gameVersion);
+    if (saved) return saved;
+    throw new Error(`Forge nie jest dostępny dla wersji ${gameVersion} (albo brak internetu)`);
+  }
+  const id = `${gameVersion}-forge-${build}`;
+  if (fs.existsSync(path.join(GAME_DIR, "versions", id, FORGE_DONE))) return id;
+
+  const full = `${gameVersion}-${build}`;
+  const installer = path.join(GAME_DIR, "cache", "forge", `forge-${full}-installer.jar`);
+  if (!fs.existsSync(installer)) {
+    send("game:log", `Pobieranie instalatora Forge ${full}...`);
+    let res;
+    try {
+      res = await fetch(`${FORGE_MAVEN}net/minecraftforge/forge/${full}/forge-${full}-installer.jar`);
+    } catch {
+      throw new Error("Brak internetu — Forge trzeba raz zainstalować z internetem");
+    }
+    if (!res.ok) throw new Error(`Nie udało się pobrać instalatora Forge ${full} (${res.status})`);
+    const data = Buffer.from(await res.arrayBuffer());
+    let valid = false;
+    try { valid = !!new AdmZip(data).getEntry("install_profile.json"); } catch {}
+    if (!valid) throw new Error("Uszkodzony instalator Forge — spróbuj ponownie");
+    fs.mkdirSync(path.dirname(installer), { recursive: true });
+    fs.writeFileSync(installer, data);
+  }
+
+  // instalator wymaga pliku launchera Mojang w folderze docelowym
+  const profiles = path.join(GAME_DIR, "launcher_profiles.json");
+  if (!fs.existsSync(profiles)) fs.writeFileSync(profiles, JSON.stringify({ profiles: {} }, null, 2));
+
+  send("game:log", `Instalowanie Forge ${full} (pierwszy raz trwa 1–3 minuty)...`);
+  // java.exe zamiast javaw.exe — instalator pisze postęp na konsolę
+  const java = /javaw\.exe$/i.test(javaPath) ? javaPath.replace(/javaw\.exe$/i, "java.exe") : javaPath;
+  const { spawn } = require("child_process");
+  const tail = [];
+  const code = await new Promise((resolve, reject) => {
+    const proc = spawn(fs.existsSync(java) ? java : javaPath, ["-jar", installer, "--installClient", GAME_DIR], { cwd: path.dirname(installer), windowsHide: true });
+    const onData = d => {
+      for (const line of d.toString().split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        tail.push(line);
+        if (tail.length > 30) tail.shift();
+        send("game:log", `[forge] ${line}`);
+      }
+    };
+    proc.stdout.on("data", onData);
+    proc.stderr.on("data", onData);
+    proc.on("error", reject);
+    proc.on("close", resolve);
+  });
+  if (code !== 0 || !fs.existsSync(path.join(GAME_DIR, "versions", id, `${id}.json`))) {
+    throw new Error(`Instalacja Forge ${full} nie powiodła się (kod ${code}). ${tail.slice(-3).join(" ")}`);
+  }
+  fs.writeFileSync(path.join(GAME_DIR, "versions", id, FORGE_DONE), new Date().toISOString());
+  send("game:log", `Forge ${full} zainstalowany`);
+  return id;
+}
+
+// minecraft-launcher-core pomija argumenty JVM z profilu, a nowy Forge ich wymaga (moduły Javy,
+// lista ignorowanych plików). Podstawiamy zmienne tak jak oficjalny launcher.
+function forgeJvmArgs(profileId) {
+  const profile = JSON.parse(fs.readFileSync(path.join(GAME_DIR, "versions", profileId, `${profileId}.json`), "utf8"));
+  const jvm = (profile.arguments && profile.arguments.jvm) || [];
+  const vars = {
+    library_directory: path.join(GAME_DIR, "libraries"),
+    classpath_separator: path.delimiter,
+    version_name: profileId,
+  };
+  return jvm
+    .filter(a => typeof a === "string")
+    .map(a => a.replace(/\$\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m)));
+}
+
 // Wersje gry na Forge z własną paczką: { "1.8.9": "xBobersonx PvP" }
 ipcMain.handle("forge:versions", () => {
   const result = {};
@@ -376,27 +506,39 @@ function packDir(version) {
   return path.join(GAME_DIR, "instances", `pack-${version}`);
 }
 
-// Folder gry dla wpisu z listy wersji: paczka xBobersonx ("pack") albo modpack ("mp:<slug>")
+// Paczka na nowym Forge ma osobny folder obok paczki Fabric tej samej wersji
+function forgeDir(version) {
+  return path.join(GAME_DIR, "instances", `forge-${version}`);
+}
+
+// Folder gry dla wpisu z listy wersji: paczka xBobersonx ("pack"), paczka na Forge ("forge")
+// albo modpack ("mp:<slug>")
 function instanceDir(version, instance) {
-  return instance && instance.startsWith("mp:") ? mrpack.modpackDir(GAME_DIR, instance.slice(3)) : packDir(version);
+  if (instance && instance.startsWith("mp:")) return mrpack.modpackDir(GAME_DIR, instance.slice(3));
+  return instance === "forge" ? forgeDir(version) : packDir(version);
+}
+
+// Dla modpack.js: wersja gry, a dla nowego Forge "forge:<wersja>" (inny loader na Modrinth i inny folder modów)
+function modTarget(version, instance) {
+  return instance === "forge" ? `forge:${version}` : version;
 }
 
 const logToConsole = msg => send("game:log", msg);
 
 ipcMain.handle("pack:name", () => packName);
 
-ipcMain.handle("mods:list", (_e, { version, instance }) => listMods(instanceDir(version, instance), version));
+ipcMain.handle("mods:list", (_e, { version, instance }) => listMods(instanceDir(version, instance), modTarget(version, instance)));
 ipcMain.handle("mods:toggle", (_e, { version, instance, tab, key, enabled }) =>
-  setModEnabled(instanceDir(version, instance), tab, key, enabled, version));
+  setModEnabled(instanceDir(version, instance), tab, key, enabled, modTarget(version, instance)));
 ipcMain.handle("mods:search", (_e, { version, instance, query }) =>
-  searchMods(instanceDir(version, instance), version, query));
+  searchMods(instanceDir(version, instance), modTarget(version, instance), query));
 ipcMain.handle("mods:install", (_e, { version, instance, id }) =>
-  installOwnMod(instanceDir(version, instance), version, id, logToConsole));
+  installOwnMod(instanceDir(version, instance), modTarget(version, instance), id, logToConsole));
 ipcMain.handle("mods:check-updates", (_e, { version, instance }) =>
-  checkOwnUpdates(instanceDir(version, instance), version));
+  checkOwnUpdates(instanceDir(version, instance), modTarget(version, instance)));
 ipcMain.handle("mods:update", (_e, { version, instance, file }) => {
   if (gameRunning) throw new Error("Zamknij grę, zanim zaktualizujesz mody");
-  return updateOwnMod(instanceDir(version, instance), version, file, logToConsole);
+  return updateOwnMod(instanceDir(version, instance), modTarget(version, instance), file, logToConsole);
 });
 
 // Shadery i paczki tekstur (type: "shader" | "resourcepack")
@@ -449,7 +591,7 @@ ipcMain.handle("modpacks:delete", async (_e, { slug, title }) => {
 ipcMain.handle("folder:mods", (_e, { version, instance, preinstalled, content: type } = {}) => {
   const base = instanceDir(version, instance);
   const folders = { shader: "shaderpacks", resourcepack: "resourcepacks" };
-  const dir = type ? path.join(base, folders[type]) : path.join(base, "mods", preinstalled ? "preinstalled" : "");
+  const dir = type ? path.join(base, folders[type]) : preinstalled ? packModsDir(base, modTarget(version, instance)) : path.join(base, "mods");
   fs.mkdirSync(dir, { recursive: true });
   return shell.openPath(dir);
 });
@@ -616,15 +758,15 @@ async function gameAuthorization(nick, log) {
 }
 
 // Analiza crasha + powiązanie podejrzanych modów z plikami, żeby można je było wyłączyć
-function describeCrash(instanceDir, version, log, code, reportFile) {
+function describeCrash(instanceDir, version, target, log, code, reportFile) {
   const report = reportFile ? fs.readFileSync(reportFile, "utf8") : "";
   let { reason, generic, suspects, details } = analyze(log, code, report);
-  const { own, pre } = listMods(instanceDir, version);
+  const { own, pre } = listMods(instanceDir, target);
   const all = [...own.map(m => ({ ...m, tab: "own" })), ...pre.map(m => ({ ...m, tab: "pre" }))];
 
   // stos wywołań: w kodzie którego moda gra się wysypała (tylko mody, które były włączone)
   const ownDir = path.join(instanceDir, "mods");
-  const preDir = packModsDir(instanceDir, version);
+  const preDir = packModsDir(instanceDir, target);
   const running = all
     .filter(m => m.enabled && m.modId)
     .map(m => ({ modId: m.modId, path: path.join(m.tab === "own" ? ownDir : preDir, m.file) }));
@@ -823,7 +965,7 @@ function quickPlay(version, address) {
   return { type: legacy ? "legacy" : "multiplayer", identifier: address };
 }
 
-ipcMain.handle("game:launch", async (_e, { nick, version, ram, loader, window: gameWindow, afterLaunch, javaArgs, syncOptions, server, world }) => {
+async function launchGame({ nick, version, ram, loader, window: gameWindow, afterLaunch, javaArgs, syncOptions, server, world }) {
   const launcher = new Client();
 
   // type trafia do --versionType; Minecraft pokazuje go na dole ekranu tytułowego
@@ -832,18 +974,11 @@ ipcMain.handle("game:launch", async (_e, { nick, version, ram, loader, window: g
   // loader: "pack" = paczka xBobersonx Mods, "mp:<slug>" = modpack z Modrinth
   const modpack = loader.startsWith("mp:") ? mrpack.readModpack(GAME_DIR, loader.slice(3)) : null;
   const gameDir = instanceDir(version, loader);
-  // 1.8.9 (i inne wersje z sekcji „forge” w modpack.json) działa na Forge, reszta na Fabric
-  const forge = !modpack && forgePack(version);
-  let forgeJar = null;
-  if (forge) {
-    send("game:log", `Instalowanie Forge ${forge.build}...`);
-    forgeJar = await installForge(forge.build);
-    send("game:log", `Forge: ${forge.build}`);
-  } else {
-    send("game:log", "Instalowanie Fabric...");
-    gameVersion.custom = await installFabric(version, modpack && modpack.fabricLoader);
-    send("game:log", `Fabric: ${gameVersion.custom}`);
-  }
+  // 1.8.9 (i inne wersje z sekcji „forge” w modpack.json) działa na starym Forge,
+  // wpis „forge” (1.20+) na nowym Forge, reszta na Fabric
+  const modernForge = loader === "forge";
+  const forge = !modpack && !modernForge && forgePack(version);
+  const target = modTarget(version, loader);
   const javaPath = await getJava(version, {
     runtimeRoot: path.join(GAME_DIR, "runtime"),
     manifestUrl: MANIFEST_URL,
@@ -851,23 +986,39 @@ ipcMain.handle("game:launch", async (_e, { nick, version, ram, loader, window: g
     log: msg => send("game:log", msg),
     progress: p => send("game:progress", p),
   });
+  let forgeJar = null;
+  const forgeArgs = [];
+  if (forge) {
+    send("game:log", `Instalowanie Forge ${forge.build}...`);
+    forgeJar = await installForge(forge.build);
+    send("game:log", `Forge: ${forge.build}`);
+  } else if (modernForge) {
+    gameVersion.custom = await installModernForge(version, javaPath);
+    forgeArgs.push(...forgeJvmArgs(gameVersion.custom));
+    send("game:log", `Forge: ${gameVersion.custom}`);
+  } else {
+    send("game:log", "Instalowanie Fabric...");
+    gameVersion.custom = await installFabric(version, modpack && modpack.fabricLoader);
+    send("game:log", `Fabric: ${gameVersion.custom}`);
+  }
 
-  const jvmArgs = [...JVM_FLAGS, ...splitArgs(javaArgs || "")];
-  if (loader === "pack") {
-    const preinstalled = await installPack(packDir(version), version, {
+  const jvmArgs = [...JVM_FLAGS, ...forgeArgs, ...splitArgs(javaArgs || "")];
+  if (loader === "pack" || modernForge) {
+    const preinstalled = await installPack(gameDir, target, {
       log: msg => send("game:log", msg),
       progress: p => send("game:progress", p),
     });
     // Fabric nie czyta podfolderów mods/, więc wskazujemy mu preinstalled/ wprost;
-    // Forge sam wczytuje mods/<wersja gry>/
-    if (!forge) jvmArgs.push(`-Dfabric.addMods=${preinstalled}`);
-    else hideOneConfigMenu();
+    // stary Forge sam wczytuje mods/<wersja gry>/, nowy — mods/
+    if (forge) hideOneConfigMenu();
+    else if (!modernForge) jvmArgs.push(`-Dfabric.addMods=${preinstalled}`);
   }
 
   // wspólne ustawienia dla wszystkich wersji: options.txt (1.8.9 w przeliczonym formacie),
   // lista serwerów, a w paczce xBobersonx też ustawienia modów, paczki tekstur i shadery
   const shareOptions = syncOptions;
-  const shareScope = { loader: forge ? "forge" : "fabric", full: loader === "pack" };
+  // ustawienia modów są wspólne tylko w obrębie jednego loadera (stary Forge, nowy Forge, Fabric)
+  const shareScope = { loader: forge ? "forge" : modernForge ? "forge-modern" : "fabric", full: loader === "pack" || modernForge };
   if (shareOptions) {
     const seededFrom = gameOptions.seed(GAME_DIR, SHARED_OPTIONS);
     if (seededFrom) send("game:log", `[ustawienia] Wspólne ustawienia utworzone z ${seededFrom}`);
@@ -881,10 +1032,10 @@ ipcMain.handle("game:launch", async (_e, { nick, version, ram, loader, window: g
   }
   syncMenuBackground(gameDir);
 
-  if (loader === "pack" && !forge) {
+  if ((loader === "pack" && !forge) || modernForge) {
     // domyślne ustawienia tylko dla wersji, w której gra jeszcze ich nie zapisała
     // (options.txt mógł powstać wcześniej z samą listą paczek tekstur)
-    const options = path.join(packDir(version), "options.txt");
+    const options = path.join(gameDir, "options.txt");
     const current = fs.existsSync(options) ? fs.readFileSync(options, "utf8") : "";
     if (!current.includes("renderDistance:")) fs.writeFileSync(options, `${fs.readFileSync(DEFAULT_OPTIONS, "utf8")}${current}`);
   }
@@ -928,7 +1079,7 @@ ipcMain.handle("game:launch", async (_e, { nick, version, ram, loader, window: g
       if (shareOptions) sharedFiles.pull(GAME_DIR, gameDir, shareScope);
       const report = findCrashReport(gameDir, startedAt);
       if (code !== 0 || report) {
-        send("game:crash", { ...describeCrash(gameDir, version, logTail.join("\n"), code, report), instance: loader });
+        send("game:crash", { ...describeCrash(gameDir, version, target, logTail.join("\n"), code, report), instance: loader });
       }
     } catch (err) {
       send("game:log", `[launcher] Błąd po zamknięciu gry: ${err.message}`);
@@ -956,7 +1107,9 @@ ipcMain.handle("game:launch", async (_e, { nick, version, ram, loader, window: g
   });
   if (!proc) throw new Error("Nie udało się uruchomić gry (sprawdź logi).");
   return true;
-});
+}
+ipcMain.handle("game:launch", (_e, options) => launchGame(options));
+
 
 
 // Tylko jedno okno launchera — drugie uruchomienie pokazuje to, które już działa

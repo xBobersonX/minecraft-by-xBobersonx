@@ -37,8 +37,10 @@ function folderOf(instanceDir, type) {
 
 // ---------- Shader (Iris) ----------
 
+// Na Forge shadery wczytuje Oculus (port Iris) — ten sam format, inna nazwa pliku
 function irisFile(instanceDir) {
-  return path.join(instanceDir, "config", "iris.properties");
+  const forge = path.basename(instanceDir).startsWith("forge-");
+  return path.join(instanceDir, "config", forge ? "oculus.properties" : "iris.properties");
 }
 
 function readIris(instanceDir) {

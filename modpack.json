@@ -88,6 +88,36 @@
       ]
     }
   },
+  "forgeModern": {
+    "from": "1.20",
+    "name": "xBobersonx Mods",
+    "libraries": [],
+    "mods": [
+      "modernfix",
+      "ferrite-core",
+      "entityculling",
+      "immediatelyfast",
+      "dynamic-fps",
+      "embeddium",
+      "oculus",
+      "badoptimizations",
+      "canary",
+      "clumps",
+      "jei",
+      "appleskin",
+      "mouse-tweaks",
+      "jade",
+      "controlling",
+      "searchables",
+      "3dskinlayers",
+      "not-enough-animations",
+      "betterf3",
+      "simple-voice-chat",
+      "e4mc",
+      "no-chat-reports",
+      "shulkerboxtooltip"
+    ]
+  },
   "bundled": [
     { "project": "bobrconfig", "file": "bundled/bobr-config-0.3.0-1.21.11.jar", "versions": ["1.21.11"] },
     { "project": "bobrconfig", "file": "bundled/bobr-config-0.3.0-1.8.9.jar", "versions": ["1.8.9"] }

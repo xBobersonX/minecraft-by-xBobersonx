@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld("api", {
   packName: () => ipcRenderer.invoke("pack:name"),
   fabricVersions: () => ipcRenderer.invoke("fabric:versions"),
   forgeVersions: () => ipcRenderer.invoke("forge:versions"),
+  forgeModern: () => ipcRenderer.invoke("forge:modern"),
   // ekran Home
   getSkin: opts => ipcRenderer.invoke("skin:get", opts),
   getNews: () => ipcRenderer.invoke("news:get"),

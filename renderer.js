@@ -34,8 +34,9 @@ function persist() {
 
 // Najpierw zainstalowane modpacki, potem paczka xBobersonx dla każdej wersji obsługiwanej przez Fabric
 // i wersje na Forge z własną paczką (forgeVersions: { "1.8.9": "xBobersonx PvP" }).
+// Wersje z forgeModern (1.20+) mają dodatkowo wpis z paczką na nowym Forge.
 // onlyInstalled: bez internetu pokazujemy tylko wersje, które już są pobrane
-function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpacks = [], forgeVersions = {}) {
+function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpacks = [], forgeVersions = {}, forgeModern = new Set()) {
   const select = $("version");
   select.innerHTML = "";
   for (const mp of modpacks) {
@@ -45,13 +46,20 @@ function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpack
     select.appendChild(opt);
   }
   for (const v of versions) {
+    if (v.type !== "release") continue;
     const forgePackName = forgeVersions[v.id];
-    if (v.type !== "release" || !(fabricVersions.has(v.id) || forgePackName)) continue;
-    if (onlyInstalled && !onlyInstalled.includes(v.id)) continue;
-    const opt = document.createElement("option");
-    opt.value = `${v.id}|pack`;
-    opt.textContent = forgePackName ? `Minecraft ${v.id} – ${forgePackName} (Forge)` : `Minecraft ${v.id} – ${packName}`;
-    select.appendChild(opt);
+    if ((fabricVersions.has(v.id) || forgePackName) && !(onlyInstalled && !onlyInstalled.includes(v.id))) {
+      const opt = document.createElement("option");
+      opt.value = `${v.id}|pack`;
+      opt.textContent = forgePackName ? `Minecraft ${v.id} – ${forgePackName} (Forge)` : `Minecraft ${v.id} – ${packName}`;
+      select.appendChild(opt);
+    }
+    if (forgeModern.has(v.id) && !(onlyInstalled && !onlyInstalled.includes(`forge:${v.id}`))) {
+      const opt = document.createElement("option");
+      opt.value = `${v.id}|forge`;
+      opt.textContent = `Minecraft ${v.id} – ${packName} (Forge)`;
+      select.appendChild(opt);
+    }
   }
   if (settings.version && select.querySelector(`option[value="${settings.version}"]`)) {
     select.value = settings.version;
@@ -302,13 +310,14 @@ async function init() {
 // Lista wersji (też po instalacji/usunięciu modpacka); select = wpis do zaznaczenia
 async function loadVersions(select) {
   try {
-    const [{ versions, offline, installed, modpacks }, fabric, packName, forge] = await Promise.all([
+    const [{ versions, offline, installed, modpacks }, fabric, packName, forge, forgeModern] = await Promise.all([
       window.api.listVersions(),
       window.api.fabricVersions().catch(() => []),
       window.api.packName(),
       window.api.forgeVersions().catch(() => ({})),
+      window.api.forgeModern().catch(() => []),
     ]);
-    fillVersions(versions, new Set(fabric), packName, offline ? installed : null, modpacks, forge);
+    fillVersions(versions, new Set(fabric), packName, offline ? installed : null, modpacks, forge, new Set(forgeModern));
     if (!$("btn-play").disabled) $("play-label").textContent = playLabel();
     homeRefresh("version");
     if (select) {
