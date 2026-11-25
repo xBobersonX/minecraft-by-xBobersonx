@@ -1,5 +1,5 @@
 // Gotowe modpacki z Modrinth (.mrpack): wyszukiwanie, instalacja do osobnego folderu, usuwanie.
-// Obsługiwane są modpacki na Fabric (tylko taki loader ma launcher).
+// Obsługiwane są modpacki na Fabric i Forge (od 1.13); z pliku także .zip z CurseForge.
 
 const fs = require("fs");
 const path = require("path");
@@ -43,7 +43,7 @@ function readModpack(gameDir, slug) {
 }
 
 async function searchModpacks(gameDir, query) {
-  const facets = JSON.stringify([["project_type:modpack"], ["categories:fabric"]]);
+  const facets = JSON.stringify([["project_type:modpack"], ["categories:fabric", "categories:forge"]]);
   const index = query ? "relevance" : "downloads";
   const data = await getJson(`${API}/search?limit=30&index=${index}&query=${encodeURIComponent(query)}&facets=${encodeURIComponent(facets)}`);
   const installed = new Set(listModpacks(gameDir).map(m => m.id));
@@ -87,7 +87,31 @@ async function downloadChecked(file, target) {
   throw new Error(`Nie udało się pobrać ${file.path} (${lastError && lastError.message})`);
 }
 
-// Zawartość archiwum .mrpack; launcher obsługuje tylko modpacki na Fabric
+function versionAtLeast(version, min) {
+  const a = String(version).split(".").map(Number), b = String(min).split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+  }
+  return true;
+}
+
+// Forge w modpackach: od 1.13 instalator przerabia grę sam (--installClient); starsze wersje mają inny instalator
+const FORGE_MIN = "1.13";
+
+// Loader modpacka: { loader: "fabric", fabricLoader } albo { loader: "forge", forgeVersion }
+function checkLoader(gameVersion, loader, loaderVersion) {
+  if (loader === "fabric") return { loader, fabricLoader: loaderVersion };
+  if (loader === "forge") {
+    if (!versionAtLeast(gameVersion, FORGE_MIN)) {
+      throw new Error(`Modpacki na Forge działają od Minecrafta ${FORGE_MIN} — ten jest na ${gameVersion}`);
+    }
+    return { loader, forgeVersion: loaderVersion };
+  }
+  const names = { neoforge: "NeoForge", quilt: "Quilt" };
+  throw new Error(`Ten modpack wymaga ${names[loader] || loader} — launcher obsługuje Fabric i Forge`);
+}
+
+// Zawartość archiwum .mrpack; launcher obsługuje modpacki na Fabric i Forge
 function readIndex(zip) {
   let index;
   try {
@@ -96,11 +120,9 @@ function readIndex(zip) {
     throw new Error("To nie jest poprawny modpack .mrpack");
   }
   const deps = index.dependencies || {};
-  if (!deps["fabric-loader"]) {
-    const loader = Object.keys(deps).find(k => k !== "minecraft") || "inny loader";
-    throw new Error(`Ten modpack wymaga ${loader} — launcher obsługuje tylko Fabric`);
-  }
   if (!deps.minecraft) throw new Error("Modpack nie podaje wersji Minecrafta");
+  const loader = deps["fabric-loader"] ? "fabric" : deps.forge ? "forge" : Object.keys(deps).find(k => k !== "minecraft") || "inny loader";
+  index.loaderInfo = checkLoader(deps.minecraft, loader.replace(/-loader$/, ""), deps["fabric-loader"] || deps.forge);
   return index;
 }
 
@@ -120,7 +142,12 @@ async function unpack(gameDir, zip, index, identity, { log, progress }) {
   });
 
   // pliki konfiguracyjne modpacka (overrides/ i client-overrides/)
-  for (const prefix of ["overrides/", "client-overrides/"]) {
+  copyOverrides(zip, dir, ["overrides/", "client-overrides/"]);
+  return saveInfo(dir, { ...identity, gameVersion: deps.minecraft, ...index.loaderInfo }, files.length, log);
+}
+
+function copyOverrides(zip, dir, prefixes) {
+  for (const prefix of prefixes) {
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory || !entry.entryName.startsWith(prefix)) continue;
       const target = safeJoin(dir, entry.entryName.slice(prefix.length));
@@ -128,19 +155,108 @@ async function unpack(gameDir, zip, index, identity, { log, progress }) {
       fs.writeFileSync(target, entry.getData());
     }
   }
+}
 
-  const info = { ...identity, gameVersion: deps.minecraft, fabricLoader: deps["fabric-loader"] };
+function saveInfo(dir, info, count, log) {
   fs.writeFileSync(path.join(dir, INFO), JSON.stringify(info, null, 2));
-  log(`[modpack] Zainstalowano ${info.title} (Minecraft ${info.gameVersion}, ${files.length} plików)`);
+  const loader = info.loader === "forge" ? "Forge" : "Fabric";
+  log(`[modpack] Zainstalowano ${info.title} (Minecraft ${info.gameVersion}, ${loader}, ${count} plików)`);
   return info;
 }
 
-// Instaluje najnowszą wersję modpacka na Fabric. progress({ task, total }), log(tekst)
+// ---------- Modpacki z CurseForge (.zip z manifest.json) ----------
+// Pliki pobieramy przez publiczny adres curseforge.com, który przekierowuje na serwer plików forgecdn.net.
+// Autor moda może zabronić pobierania spoza CurseForge — takie mody gracz musi wgrać sam (podajemy listę).
+
+const CF_DOWNLOAD = (project, file) => `https://www.curseforge.com/api/v1/mods/${project}/files/${file}/download`;
+const CF_HOSTS = /(^|\.)forgecdn\.net$/;
+
+function readCurseManifest(zip) {
+  let manifest;
+  try {
+    manifest = JSON.parse(zip.readAsText("manifest.json"));
+  } catch {
+    return null;
+  }
+  if (!manifest || manifest.manifestType !== "minecraftModpack" || !manifest.minecraft) return null;
+  const gameVersion = manifest.minecraft.version;
+  if (!gameVersion) throw new Error("Modpack nie podaje wersji Minecrafta");
+  const loaders = manifest.minecraft.modLoaders || [];
+  const primary = loaders.find(l => l.primary) || loaders[0];
+  if (!primary || !primary.id) throw new Error("Modpack nie podaje loadera modów");
+  const [, loader, loaderVersion] = /^([a-z]+)-(.+)$/.exec(primary.id) || [null, primary.id, ""];
+  // CurseForge podaje Forge jako „forge-47.2.0”, czasem z wersją gry z przodu („forge-1.20.1-47.2.0”)
+  const version = loader === "forge" ? loaderVersion.replace(new RegExp(`^${gameVersion.replace(/\./g, "\\.")}-`), "") : loaderVersion;
+  manifest.loaderInfo = checkLoader(gameVersion, loader, version);
+  return manifest;
+}
+
+// Gdzie położyć plik z CurseForge: .jar to mod; .zip to paczka tekstur albo shader (shader ma folder shaders/)
+function curseTarget(name, data) {
+  if (/\.jar$/i.test(name)) return "mods";
+  if (/\.zip$/i.test(name)) {
+    try {
+      if (new AdmZip(data).getEntries().some(e => /^shaders\//.test(e.entryName))) return "shaderpacks";
+    } catch {}
+    return "resourcepacks";
+  }
+  return null;
+}
+
+async function downloadCurse(dir, entry) {
+  const res = await fetch(CF_DOWNLOAD(entry.projectID, entry.fileID), { headers: HEADERS, redirect: "follow" });
+  if (!res.ok) throw new Error(`${res.status}`);
+  const finalUrl = new URL(res.url);
+  if (finalUrl.protocol !== "https:" || !CF_HOSTS.test(finalUrl.hostname)) throw new Error("niedozwolony adres pobierania");
+  const name = decodeURIComponent(finalUrl.pathname.split("/").pop() || "");
+  if (!name || /[\\/:*?"<>|]/.test(name) || name.startsWith(".")) throw new Error(`zła nazwa pliku ${name}`);
+  const data = Buffer.from(await res.arrayBuffer());
+  const folder = curseTarget(name, data);
+  if (!folder) throw new Error(`nieznany typ pliku ${name}`);
+  const target = safeJoin(dir, path.join(folder, name));
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, data);
+  return name;
+}
+
+async function importCurse(gameDir, zip, manifest, fallbackTitle, { log, progress }) {
+  const title = String(manifest.name || fallbackTitle);
+  const slug = slugFromName(title);
+  const dir = modpackDir(gameDir, slug);
+  if (fs.existsSync(path.join(dir, INFO))) {
+    throw new Error(`Modpack „${title}” jest już zainstalowany — usuń go najpierw, jeśli chcesz wgrać go od nowa`);
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const files = (manifest.files || []).filter(f => f.required !== false && Number.isInteger(f.projectID) && Number.isInteger(f.fileID));
+  const missing = [];
+  let done = 0;
+  progress({ task: 0, total: files.length });
+  await pool(files, 6, async f => {
+    try {
+      await downloadCurse(dir, f);
+    } catch (err) {
+      missing.push(`https://www.curseforge.com/projects/${f.projectID} (plik ${f.fileID}: ${err.message})`);
+    }
+    progress({ task: ++done, total: files.length });
+  });
+  copyOverrides(zip, dir, [`${String(manifest.overrides || "overrides").replace(/\/?$/, "/")}`]);
+
+  const identity = { id: `file:${slug}`, slug, title, icon: null, version: String(manifest.version || "") };
+  const info = saveInfo(dir, { ...identity, gameVersion: manifest.minecraft.version, ...manifest.loaderInfo }, files.length - missing.length, log);
+  if (missing.length) {
+    log(`[modpack] ${missing.length} modów nie dało się pobrać automatycznie (autor zablokował pobieranie spoza CurseForge). Pobierz je ręcznie do folderu mods:`);
+    for (const m of missing) log(`[modpack]   ${m}`);
+    info.missing = missing.length;
+  }
+  return info;
+}
+
+// Instaluje najnowszą wersję modpacka na Fabric albo Forge. progress({ task, total }), log(tekst)
 async function installModpack(gameDir, projectId, options) {
   const project = await getJson(`${API}/project/${projectId}`);
-  const versions = await getJson(`${API}/project/${projectId}/version?loaders=${encodeURIComponent('["fabric"]')}`);
+  const versions = await getJson(`${API}/project/${projectId}/version?loaders=${encodeURIComponent('["fabric","forge"]')}`);
   const version = versions.find(v => v.version_type === "release") || versions[0];
-  if (!version) throw new Error("Ten modpack nie ma wersji na Fabric");
+  if (!version) throw new Error("Ten modpack nie ma wersji na Fabric ani Forge");
   const packFile = version.files.find(f => f.primary) || version.files[0];
 
   options.log(`[modpack] Pobieranie ${project.title} ${version.version_number}...`);
@@ -180,7 +296,13 @@ async function importModpack(gameDir, file, options) {
   try {
     zip = new AdmZip(file);
   } catch {
-    throw new Error("To nie jest poprawny modpack .mrpack");
+    throw new Error("To nie jest poprawny modpack (.mrpack z Modrinth albo .zip z CurseForge)");
+  }
+  // .zip z CurseForge (manifest.json); .mrpack z Modrinth ma modrinth.index.json
+  if (!zip.getEntry("modrinth.index.json")) {
+    const manifest = readCurseManifest(zip);
+    if (!manifest) throw new Error("To nie jest poprawny modpack (.mrpack z Modrinth albo .zip z CurseForge)");
+    return importCurse(gameDir, zip, manifest, path.basename(file, path.extname(file)), options);
   }
   const index = readIndex(zip);
   for (const f of clientFiles(index)) {

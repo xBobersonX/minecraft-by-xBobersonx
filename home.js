@@ -56,7 +56,7 @@
     const [version, instance] = (select.value || "").split("|");
     const option = select.selectedOptions[0];
     const text = option ? option.textContent : "";
-    const forge = / \(Forge\)$/.test(text);
+    const forge = /[ ,] ?\(?Forge\)$/.test(text);
     let profile = text.includes(" – ") ? text.split(" – ").slice(1).join(" – ") : text;
     profile = profile.replace(/ \(Forge\)$/, "").replace(/^📦\s*/, "").replace(/ \([^)]*\)$/, "");
     return { version, instance, key: select.value, profile, loader: forge ? "Forge" : "Fabric" };

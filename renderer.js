@@ -42,7 +42,7 @@ function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpack
   for (const mp of modpacks) {
     const opt = document.createElement("option");
     opt.value = `${mp.gameVersion}|mp:${mp.slug}`;
-    opt.textContent = `📦 ${mp.title} (${mp.gameVersion})`;
+    opt.textContent = `📦 ${mp.title} (${mp.gameVersion}${mp.loader === "forge" ? ", Forge" : ""})`;
     select.appendChild(opt);
   }
   for (const v of versions) {
@@ -1107,7 +1107,7 @@ function modpackRow(mp) {
   title.textContent = mp.title;
   const meta = document.createElement("div");
   meta.className = "result-meta";
-  meta.textContent = `Minecraft ${mp.gameVersion} · wersja ${mp.version}`;
+  meta.textContent = `Minecraft ${mp.gameVersion} · ${mp.loader === "forge" ? "Forge" : "Fabric"}${mp.version ? ` · wersja ${mp.version}` : ""}`;
   body.append(title, meta);
 
   const buttons = document.createElement("div");
@@ -1167,7 +1167,10 @@ async function runModpackInstall(install) {
     if (!info) return "";
     await loadVersions(`${info.gameVersion}|mp:${info.slug}`);
     await loadModpacks();
-    return `Zainstalowano ${info.title} (Minecraft ${info.gameVersion}) — wybrany na liście wersji, kliknij „Graj”`;
+    const missing = info.missing
+      ? ` Uwaga: ${info.missing} modów trzeba pobrać ręcznie z CurseForge (lista w konsoli launchera).`
+      : "";
+    return `Zainstalowano ${info.title} (Minecraft ${info.gameVersion}) — wybrany na liście wersji, kliknij „Graj”.${missing}`;
   } finally {
     modpackInstalling = false;
     $("modpacks-progress").hidden = true;

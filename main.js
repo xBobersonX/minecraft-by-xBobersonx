@@ -408,11 +408,70 @@ function savedForgeProfile(gameVersion) {
 }
 
 // Instaluje (raz) Forge dla danej wersji gry i zwraca id profilu, np. "1.20.1-forge-47.4.28"
-async function installModernForge(gameVersion, javaPath) {
-  let build;
+function fileSha1(file) {
+  return require("crypto").createHash("sha1").update(fs.readFileSync(file)).digest("hex");
+}
+
+// Plik gry versions/<wersja>/<wersja>.jar ze sprawdzoną sumą (instalator Forge przerabia właśnie jego)
+async function ensureVanillaJar(gameVersion) {
+  const { data: manifest } = await cachedJson(MANIFEST_URL, "version_manifest");
+  const entry = (manifest.versions || []).find(v => v.id === gameVersion);
+  if (!entry) return;
+  const dir = path.join(GAME_DIR, "versions", gameVersion);
+  const jsonFile = path.join(dir, `${gameVersion}.json`);
+  let version;
   try {
-    build = (await modernForgeBuilds())[gameVersion];
-  } catch {}
+    version = JSON.parse(fs.readFileSync(jsonFile, "utf8"));
+  } catch {
+    const res = await fetch(entry.url);
+    if (!res.ok) throw new Error(`Nie udało się pobrać danych wersji ${gameVersion} (${res.status})`);
+    version = await res.json();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(jsonFile, JSON.stringify(version, null, 2));
+  }
+  const client = version.downloads && version.downloads.client;
+  if (!client) return;
+  const jar = path.join(dir, `${gameVersion}.jar`);
+  if (fs.existsSync(jar) && fileSha1(jar) === client.sha1) return;
+  send("game:log", `Pobieranie Minecrafta ${gameVersion}...`);
+  const res = await fetch(client.url);
+  if (!res.ok) throw new Error(`Nie udało się pobrać Minecrafta ${gameVersion} (${res.status})`);
+  const data = Buffer.from(await res.arrayBuffer());
+  if (require("crypto").createHash("sha1").update(data).digest("hex") !== client.sha1) {
+    throw new Error(`Uszkodzony plik Minecrafta ${gameVersion} — spróbuj ponownie`);
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(jar, data);
+}
+
+// Usuwa biblioteki z instalatora, które leżą na dysku ze złą sumą kontrolną — instalator pobierze je od nowa
+function dropBrokenLibraries(installer) {
+  const zip = new AdmZip(installer);
+  const libs = [];
+  for (const name of ["install_profile.json", "version.json"]) {
+    try { libs.push(...(JSON.parse(zip.readAsText(name)).libraries || [])); } catch {}
+  }
+  for (const lib of libs) {
+    const art = lib.downloads && lib.downloads.artifact;
+    if (!art || !art.path || !art.sha1) continue;
+    const file = path.join(GAME_DIR, "libraries", ...art.path.split("/"));
+    try {
+      if (fs.existsSync(file) && fileSha1(file) !== art.sha1) {
+        fs.rmSync(file, { force: true });
+        send("game:log", `[forge] Usunięto uszkodzony plik ${path.basename(file)}`);
+      }
+    } catch {}
+  }
+}
+
+// wantedBuild: konkretna wersja Forge (modpacki jej wymagają); bez niej — zalecana z promotions
+async function installModernForge(gameVersion, javaPath, wantedBuild) {
+  let build = wantedBuild;
+  if (!build) {
+    try {
+      build = (await modernForgeBuilds())[gameVersion];
+    } catch {}
+  }
   if (!build) {
     const saved = savedForgeProfile(gameVersion);
     if (saved) return saved;
@@ -439,6 +498,10 @@ async function installModernForge(gameVersion, javaPath) {
     fs.mkdirSync(path.dirname(installer), { recursive: true });
     fs.writeFileSync(installer, data);
   }
+
+  // instalator nie sprawdza plików, które już są na dysku — urwane po przerwanej instalacji psułyby każdą następną
+  await ensureVanillaJar(gameVersion);
+  dropBrokenLibraries(installer);
 
   // instalator wymaga pliku launchera Mojang w folderze docelowym
   const profiles = path.join(GAME_DIR, "launcher_profiles.json");
@@ -520,7 +583,13 @@ function instanceDir(version, instance) {
 
 // Dla modpack.js: wersja gry, a dla nowego Forge "forge:<wersja>" (inny loader na Modrinth i inny folder modów)
 function modTarget(version, instance) {
-  return instance === "forge" ? `forge:${version}` : version;
+  if (instance === "forge") return `forge:${version}`;
+  if (instance && instance.startsWith("mp:")) {
+    try {
+      if (mrpack.readModpack(GAME_DIR, instance.slice(3)).loader === "forge") return `forge:${version}`;
+    } catch {}
+  }
+  return version;
 }
 
 const logToConsole = msg => send("game:log", msg);
@@ -563,7 +632,7 @@ ipcMain.handle("modpacks:install", (_e, { id }) =>
 ipcMain.handle("modpacks:import", async () => {
   const { canceled, filePaths } = await dialog.showOpenDialog(win, {
     title: t("Importuj modpack"),
-    filters: [{ name: "Modpack (.mrpack)", extensions: ["mrpack", "mcpack"] }],
+    filters: [{ name: "Modpack (.mrpack, .zip z CurseForge)", extensions: ["mrpack", "zip", "mcpack"] }],
     properties: ["openFile"],
   });
   if (canceled) return null;
@@ -977,6 +1046,7 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   // 1.8.9 (i inne wersje z sekcji „forge” w modpack.json) działa na starym Forge,
   // wpis „forge” (1.20+) na nowym Forge, reszta na Fabric
   const modernForge = loader === "forge";
+  const modpackForge = !!modpack && modpack.loader === "forge"; // modpack z Modrinth/CurseForge na Forge
   const forge = !modpack && !modernForge && forgePack(version);
   const target = modTarget(version, loader);
   const javaPath = await getJava(version, {
@@ -992,8 +1062,8 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
     send("game:log", `Instalowanie Forge ${forge.build}...`);
     forgeJar = await installForge(forge.build);
     send("game:log", `Forge: ${forge.build}`);
-  } else if (modernForge) {
-    gameVersion.custom = await installModernForge(version, javaPath);
+  } else if (modernForge || modpackForge) {
+    gameVersion.custom = await installModernForge(version, javaPath, modpackForge ? modpack.forgeVersion : null);
     forgeArgs.push(...forgeJvmArgs(gameVersion.custom));
     send("game:log", `Forge: ${gameVersion.custom}`);
   } else {
@@ -1018,7 +1088,7 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   // lista serwerów, a w paczce xBobersonx też ustawienia modów, paczki tekstur i shadery
   const shareOptions = syncOptions;
   // ustawienia modów są wspólne tylko w obrębie jednego loadera (stary Forge, nowy Forge, Fabric)
-  const shareScope = { loader: forge ? "forge" : modernForge ? "forge-modern" : "fabric", full: loader === "pack" || modernForge };
+  const shareScope = { loader: forge ? "forge" : modernForge || modpackForge ? "forge-modern" : "fabric", full: loader === "pack" || modernForge };
   if (shareOptions) {
     const seededFrom = gameOptions.seed(GAME_DIR, SHARED_OPTIONS);
     if (seededFrom) send("game:log", `[ustawienia] Wspólne ustawienia utworzone z ${seededFrom}`);
