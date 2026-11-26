@@ -36,14 +36,30 @@ function persist() {
 // i wersje na Forge z własną paczką (forgeVersions: { "1.8.9": "xBobersonx PvP" }).
 // Wersje z forgeModern (1.20+) mają dodatkowo wpis z paczką na nowym Forge.
 // onlyInstalled: bez internetu pokazujemy tylko wersje, które już są pobrane
+// Co jest dostępne dla każdej wersji gry — okno „Nowy profil” pokazuje tylko działające loadery
+let loaderSets = { versions: [], fabric: new Set(), oldForge: {}, forge: new Set(), neoforge: new Set(), packName: "" };
+// slug → dane modpacka albo profilu (np. czy profil ma paczkę xBobersonx)
+const instanceInfo = new Map();
+
+const LOADER_NAMES = { fabric: "Fabric", forge: "Forge", neoforge: "NeoForge", vanilla: "bez modów" };
+
 function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpacks = [], forgeVersions = {}, forgeModern = new Set(), neoforge = new Set()) {
+  loaderSets = { versions, fabric: fabricVersions, oldForge: forgeVersions, forge: forgeModern, neoforge, packName };
+  instanceInfo.clear();
   const select = $("version");
   select.innerHTML = "";
-  for (const mp of modpacks) {
+  // najpierw własne profile, potem modpacki
+  const sorted = [...modpacks.filter(m => m.kind === "profile"), ...modpacks.filter(m => m.kind !== "profile")];
+  for (const mp of sorted) {
+    instanceInfo.set(mp.slug, mp);
     const opt = document.createElement("option");
     opt.value = `${mp.gameVersion}|mp:${mp.slug}`;
-    const mpLoader = { forge: ", Forge", neoforge: ", NeoForge" }[mp.loader] || "";
-    opt.textContent = `📦 ${mp.title} (${mp.gameVersion}${mpLoader})`;
+    if (mp.kind === "profile") {
+      opt.textContent = `🧩 ${mp.title} (${mp.gameVersion}, ${mp.loader === "vanilla" ? "bez modów" : LOADER_NAMES[mp.loader]})`;
+    } else {
+      const mpLoader = { forge: ", Forge", neoforge: ", NeoForge" }[mp.loader] || "";
+      opt.textContent = `📦 ${mp.title} (${mp.gameVersion}${mpLoader})`;
+    }
     select.appendChild(opt);
   }
   for (const v of versions) {
@@ -827,8 +843,10 @@ $("btn-mods").onclick = async () => {
   $("mods-title").textContent = `Mody — ${option.textContent}`;
   $("mods-search").value = "";
   modUpdates = new Map();
-  // modpack nie ma paczki xBobersonx — jego mody są w zakładce „Własne mody”
-  document.querySelector('.tab[data-tab="pre"]').hidden = modsTarget().instance !== "pack";
+  // modpack nie ma paczki xBobersonx — jego mody są w zakładce „Własne mody”; profil — tylko jeśli ją wybrano
+  const { instance } = modsTarget();
+  const info = instance && instance.startsWith("mp:") ? instanceInfo.get(instance.slice(3)) : null;
+  document.querySelector('.tab[data-tab="pre"]').hidden = !(["pack", "forge", "neoforge"].includes(instance) || (info && info.pack));
   // shadery działają przez Iris, a Iris jest dopiero od 1.16 — na starszych wersjach zakładka by była pusta
   const minor = Number(modsTarget().version.split(".")[1]);
   document.querySelector('.tab[data-tab="shader"]').hidden = !!minor && minor < 16;
@@ -1108,6 +1126,7 @@ function modpackRow(mp) {
   icon.className = "result-icon";
   icon.src = mp.icon || "assets/icon.png";
   icon.alt = "";
+  if (mp.kind === "profile") icon.classList.add("profile-icon");
   const body = document.createElement("div");
   body.className = "result-body";
   const title = document.createElement("div");
@@ -1115,8 +1134,10 @@ function modpackRow(mp) {
   title.textContent = mp.title;
   const meta = document.createElement("div");
   meta.className = "result-meta";
-  const loaderName = { forge: "Forge", neoforge: "NeoForge" }[mp.loader] || "Fabric";
-  meta.textContent = `Minecraft ${mp.gameVersion} · ${loaderName}${mp.version ? ` · wersja ${mp.version}` : ""}`;
+  const loaderName = LOADER_NAMES[mp.loader] || "Fabric";
+  meta.textContent = mp.kind === "profile"
+    ? `Profil · Minecraft ${mp.gameVersion} · ${loaderName}${mp.pack ? ` · z paczką ${loaderSets.packName || "xBobersonx"}` : ""}`
+    : `Minecraft ${mp.gameVersion} · ${loaderName}${mp.version ? ` · wersja ${mp.version}` : ""}`;
   body.append(title, meta);
 
   const buttons = document.createElement("div");
@@ -1149,11 +1170,18 @@ function modpackRow(mp) {
 function renderModpacks() {
   const list = $("modpacks-list");
   list.innerHTML = "";
-  list.appendChild(section(`Zainstalowane (${modpacksInstalled.length})`));
-  if (modpacksInstalled.length === 0) {
+  const profiles = modpacksInstalled.filter(m => m.kind === "profile");
+  const packs = modpacksInstalled.filter(m => m.kind !== "profile");
+  list.appendChild(section(`Twoje profile (${profiles.length})`));
+  if (profiles.length === 0) {
+    list.appendChild(note("Brak profili — kliknij „Nowy profil…”, żeby zrobić np. osobny profil pod PvP i pod Survival"));
+  }
+  for (const mp of profiles) list.appendChild(modpackRow(mp));
+  list.appendChild(section(`Zainstalowane modpacki (${packs.length})`));
+  if (packs.length === 0) {
     list.appendChild(note("Nic jeszcze nie zainstalowano — wybierz modpack poniżej"));
   }
-  for (const mp of modpacksInstalled) list.appendChild(modpackRow(mp));
+  for (const mp of packs) list.appendChild(modpackRow(mp));
 
   list.appendChild(section("Modpacki do pobrania (Modrinth, Fabric)"));
   if (!modpackResults || modpackResults.length === 0) {
@@ -1228,6 +1256,101 @@ $("btn-modpacks").onclick = () => {
   searchModpacks();
 };
 $("btn-close-modpacks").onclick = () => { $("modpacks").hidden = true; };
+
+// ---------- Okno „Nowy profil” ----------
+
+// Loadery działające na danej wersji gry
+function profileLoaders(version) {
+  const list = [];
+  if (loaderSets.fabric.has(version)) list.push("fabric");
+  if (loaderSets.forge.has(version) || loaderSets.oldForge[version]) list.push("forge");
+  if (loaderSets.neoforge.has(version)) list.push("neoforge");
+  list.push("vanilla");
+  return list;
+}
+
+// Paczka xBobersonx istnieje dla: Fabric (każda wersja), Forge (1.8.9 i 1.20+), NeoForge
+function profileHasPack(version, loader) {
+  if (loader === "vanilla") return false;
+  if (loader === "forge") return !!loaderSets.oldForge[version] || loaderSets.forge.has(version);
+  return true;
+}
+
+function fillProfileLoaders() {
+  const version = $("profile-version").value;
+  const select = $("profile-loader");
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const loader of profileLoaders(version)) {
+    const opt = document.createElement("option");
+    opt.value = loader;
+    opt.textContent = loader === "vanilla" ? "Bez modów (czysty Minecraft)" : LOADER_NAMES[loader];
+    select.appendChild(opt);
+  }
+  // 1.8.9 najczęściej gra się na Forge (paczka PvP)
+  if ([...select.options].some(o => o.value === previous)) select.value = previous;
+  else if (loaderSets.oldForge[version]) select.value = "forge";
+  updateProfilePack();
+}
+
+function updateProfilePack() {
+  const version = $("profile-version").value, loader = $("profile-loader").value;
+  const available = profileHasPack(version, loader);
+  $("profile-pack").disabled = !available;
+  if (!available) $("profile-pack").checked = false;
+  const pvp = loader === "forge" && loaderSets.oldForge[version];
+  $("profile-pack-label").textContent = available
+    ? `Z paczką modów ${pvp || loaderSets.packName || "xBobersonx"}`
+    : "Z paczką modów (niedostępna dla tego wyboru)";
+}
+
+$("btn-profile-new").onclick = () => {
+  const select = $("profile-version");
+  select.innerHTML = "";
+  for (const v of loaderSets.versions) {
+    if (v.type !== "release") continue;
+    const opt = document.createElement("option");
+    opt.value = v.id;
+    opt.textContent = `Minecraft ${v.id}`;
+    select.appendChild(opt);
+  }
+  if (!select.options.length) {
+    $("modpacks-hint").textContent = "Brak listy wersji — sprawdź internet";
+    return;
+  }
+  $("profile-name").value = "";
+  $("profile-hint").textContent = "";
+  $("profile-pack").checked = true;
+  fillProfileLoaders();
+  $("profile-new").hidden = false;
+  $("profile-name").focus();
+};
+$("profile-version").onchange = fillProfileLoaders;
+$("profile-loader").onchange = updateProfilePack;
+const closeProfile = () => { $("profile-new").hidden = true; };
+$("btn-close-profile").onclick = closeProfile;
+$("btn-profile-cancel").onclick = closeProfile;
+$("profile-form").onsubmit = async event => {
+  event.preventDefault();
+  const button = $("btn-profile-create");
+  button.disabled = true;
+  try {
+    const info = await window.api.createProfile({
+      name: $("profile-name").value,
+      gameVersion: $("profile-version").value,
+      loader: $("profile-loader").value,
+      pack: $("profile-pack").checked && !$("profile-pack").disabled,
+    });
+    closeProfile();
+    await loadVersions(`${info.gameVersion}|mp:${info.slug}`);
+    await loadModpacks();
+    $("modpacks-hint").textContent = `Utworzono profil ${info.title} — wybrany na liście wersji, kliknij „Graj”`;
+  } catch (err) {
+    $("profile-hint").textContent = cleanError(err);
+  } finally {
+    button.disabled = false;
+  }
+};
 $("modpacks-search").oninput = () => {
   clearTimeout(modpacksTimer);
   modpacksTimer = setTimeout(searchModpacks, 400);

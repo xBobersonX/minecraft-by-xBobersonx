@@ -652,6 +652,8 @@ function modTarget(version, instance) {
   if (instance && instance.startsWith("mp:")) {
     try {
       const { loader } = mrpack.readModpack(GAME_DIR, instance.slice(3));
+      // profil na 1.8.9 używa starego Forge — jego mody leżą w mods/<wersja>, jak w paczce PvP
+      if (loader === "forge" && forgePack(version)) return version;
       if (loader === "forge" || loader === "neoforge") return `${loader}:${version}`;
     } catch {}
   }
@@ -707,12 +709,28 @@ ipcMain.handle("modpacks:import", async () => {
     progress: p => send("modpacks:progress", p),
   });
 });
+// Własne profile: { name, gameVersion, loader: fabric|forge|neoforge|vanilla, pack }
+ipcMain.handle("profiles:create", async (_e, options) => {
+  const { gameVersion, loader } = options || {};
+  const supported = {
+    vanilla: async () => true,
+    fabric: async () => (await cachedJson("https://meta.fabricmc.net/v2/versions/game", "fabric_versions")).data.some(v => v.version === gameVersion),
+    forge: async () => !!forgePack(gameVersion) || gameVersion in (await modernForgeBuilds()),
+    neoforge: async () => gameVersion in (await neoforgeBuilds()),
+  }[loader];
+  const names = { fabric: "Fabric", forge: "Forge", neoforge: "NeoForge" };
+  if (supported && !(await supported().catch(() => false))) {
+    throw new Error(`${names[loader]} nie jest dostępny dla Minecrafta ${gameVersion}`);
+  }
+  return mrpack.createProfile(GAME_DIR, options);
+});
+
 ipcMain.handle("modpacks:delete", async (_e, { slug, title }) => {
   if (gameRunning) throw new Error("Zamknij grę, zanim usuniesz modpack");
   const { response } = await dialog.showMessageBox(win, {
     type: "warning",
-    title: t("Usuń modpack"),
-    message: t(`Usunąć modpack ${title}?`),
+    title: t(slug.startsWith("profile-") ? "Usuń profil" : "Usuń modpack"),
+    message: t(slug.startsWith("profile-") ? `Usunąć profil ${title}?` : `Usunąć modpack ${title}?`),
     detail: t("Razem z nim znikną jego światy, ustawienia i mody. Tego nie da się cofnąć."),
     buttons: [t("Usuń"), t("Anuluj")],
     defaultId: 1,
@@ -1113,9 +1131,13 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   // wpis „forge” (1.20+) na nowym Forge, reszta na Fabric
   // paczka xBobersonx na Forge/NeoForge albo modpack z Modrinth/CurseForge na Forge/NeoForge
   const modernForge = loader === "forge" || loader === "neoforge";
-  const modpackForge = !!modpack && (modpack.loader === "forge" || modpack.loader === "neoforge");
+  // własny profil: osobna instancja; na 1.8.9 z Forge używa starego Forge, jak paczka PvP
+  const profile = modpack && modpack.kind === "profile" ? modpack : null;
+  const oldForgeProfile = profile && profile.loader === "forge" ? forgePack(version) : null;
+  const vanilla = !!profile && profile.loader === "vanilla";
+  const modpackForge = !!modpack && !oldForgeProfile && (modpack.loader === "forge" || modpack.loader === "neoforge");
   const forgeKind = modernForge ? loader : modpackForge ? modpack.loader : null;
-  const forge = !modpack && !modernForge && forgePack(version);
+  const forge = (!modpack && !modernForge && forgePack(version)) || oldForgeProfile;
   const target = modTarget(version, loader);
   const javaPath = await getJava(version, {
     runtimeRoot: path.join(GAME_DIR, "runtime"),
@@ -1134,6 +1156,8 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
     gameVersion.custom = await installForgeLoader(forgeKind, version, javaPath, modpackForge ? modpack.forgeVersion : null);
     forgeArgs.push(...forgeJvmArgs(gameVersion.custom));
     send("game:log", `${FORGE_KINDS[forgeKind].label}: ${gameVersion.custom}`);
+  } else if (vanilla) {
+    send("game:log", `Minecraft ${version} bez modów`);
   } else {
     send("game:log", "Instalowanie Fabric...");
     gameVersion.custom = await installFabric(version, modpack && modpack.fabricLoader);
@@ -1141,7 +1165,8 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   }
 
   const jvmArgs = [...JVM_FLAGS, ...forgeArgs, ...splitArgs(javaArgs || "")];
-  if (loader === "pack" || modernForge) {
+  const withPack = loader === "pack" || modernForge || !!(profile && profile.pack);
+  if (withPack) {
     const preinstalled = await installPack(gameDir, target, {
       log: msg => send("game:log", msg),
       progress: p => send("game:progress", p),
@@ -1149,12 +1174,13 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
     // Fabric nie czyta podfolderów mods/, więc wskazujemy mu preinstalled/ wprost;
     // stary Forge sam wczytuje mods/<wersja gry>/, nowy — mods/
     if (forge) hideOneConfigMenu();
-    else if (!modernForge) jvmArgs.push(`-Dfabric.addMods=${preinstalled}`);
+    else if (!forgeKind) jvmArgs.push(`-Dfabric.addMods=${preinstalled}`);
   }
 
   // wspólne ustawienia dla wszystkich wersji: options.txt (1.8.9 w przeliczonym formacie),
   // lista serwerów, a w paczce xBobersonx też ustawienia modów, paczki tekstur i shadery
-  const shareOptions = syncOptions;
+  // profil ma własne ustawienia — nie dostaje wspólnych (po to się go tworzy)
+  const shareOptions = syncOptions && !profile;
   // ustawienia modów są wspólne tylko w obrębie jednego loadera (stary Forge, nowy Forge, Fabric)
   const shareScope = { loader: forge ? "forge" : forgeKind === "neoforge" ? "neoforge" : forgeKind ? "forge-modern" : "fabric", full: loader === "pack" || modernForge };
   if (shareOptions) {
@@ -1170,7 +1196,7 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   }
   syncMenuBackground(gameDir);
 
-  if ((loader === "pack" && !forge) || modernForge) {
+  if ((withPack && !forge) || (profile && !forge)) {
     // domyślne ustawienia tylko dla wersji, w której gra jeszcze ich nie zapisała
     // (options.txt mógł powstać wcześniej z samą listą paczek tekstur)
     const options = path.join(gameDir, "options.txt");

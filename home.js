@@ -59,8 +59,9 @@
     const neoforge = /NeoForge\)$/.test(text);
     const forge = !neoforge && /[ ,] ?\(?Forge\)$/.test(text);
     let profile = text.includes(" – ") ? text.split(" – ").slice(1).join(" – ") : text;
-    profile = profile.replace(/ \((Neo)?Forge\)$/, "").replace(/^📦\s*/, "").replace(/ \([^)]*\)$/, "");
-    return { version, instance, key: select.value, profile, loader: neoforge ? "NeoForge" : forge ? "Forge" : "Fabric" };
+    profile = profile.replace(/ \((Neo)?Forge\)$/, "").replace(/^(📦|🧩)\s*/u, "").replace(/ \([^)]*\)$/, "");
+    const vanilla = /bez modów\)$/.test(text);
+    return { version, instance, key: select.value, profile, loader: neoforge ? "NeoForge" : forge ? "Forge" : vanilla ? "Minecraft" : "Fabric" };
   }
   // szybkie wejście do świata działa od Minecrafta 1.20
   const quickWorlds = version => {

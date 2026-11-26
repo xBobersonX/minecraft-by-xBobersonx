@@ -327,8 +327,36 @@ async function importModpack(gameDir, file, options) {
   return unpack(gameDir, zip, index, identity, options);
 }
 
+// ---------- Własne profile ----------
+// Profil to pusta instancja z własnym folderem (mody, światy, paczki tekstur, ustawienia) na wybranej wersji
+// i loaderze; opcjonalnie z paczką modów xBobersonx. Zapisany jak modpack (mp-profile-…), więc lista wersji,
+// okno modów, światy i usuwanie działają tak samo.
+const PROFILE_LOADERS = new Set(["fabric", "forge", "neoforge", "vanilla"]);
+
+function createProfile(gameDir, { name, gameVersion, loader, pack }) {
+  const title = String(name || "").trim().replace(/\s+/g, " ");
+  if (!title) throw new Error("Wpisz nazwę profilu");
+  if (title.length > 40) throw new Error("Nazwa profilu może mieć najwyżej 40 znaków");
+  if (!/^\d+\.\d+(\.\d+)?$/.test(String(gameVersion))) throw new Error("Wybierz wersję gry");
+  if (!PROFILE_LOADERS.has(loader)) throw new Error("Wybierz loader");
+  if (listModpacks(gameDir).some(m => m.kind === "profile" && m.title.toLowerCase() === title.toLowerCase())) {
+    throw new Error(`Profil „${title}” już istnieje`);
+  }
+  const base = `profile-${slugFromName(title).slice("file-".length)}`;
+  let slug = base;
+  for (let i = 2; fs.existsSync(modpackDir(gameDir, slug)); i++) slug = `${base}-${i}`;
+  const dir = modpackDir(gameDir, slug);
+  for (const sub of ["mods", "saves", "resourcepacks", "config"]) fs.mkdirSync(path.join(dir, sub), { recursive: true });
+  const info = {
+    id: `profile:${slug}`, slug, title, icon: null, version: "", kind: "profile",
+    gameVersion: String(gameVersion), loader, pack: !!pack && loader !== "vanilla", created: Date.now(),
+  };
+  fs.writeFileSync(path.join(dir, INFO), JSON.stringify(info, null, 2));
+  return info;
+}
+
 function deleteModpack(gameDir, slug) {
   fs.rmSync(modpackDir(gameDir, slug), { recursive: true, force: true });
 }
 
-module.exports = { listModpacks, readModpack, searchModpacks, installModpack, importModpack, deleteModpack, modpackDir };
+module.exports = { listModpacks, readModpack, searchModpacks, installModpack, importModpack, createProfile, deleteModpack, modpackDir };

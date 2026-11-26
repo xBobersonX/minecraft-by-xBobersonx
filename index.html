@@ -352,11 +352,33 @@
       <div class="mods-toolbar">
         <span class="note">Gotowe zestawy modów na Fabric. Każdy modpack ma osobne światy i ustawienia.</span>
         <input id="modpacks-search" placeholder="Szukaj modpacków…" spellcheck="false">
+        <button id="btn-profile-new" title="Osobna instancja z własnymi modami, światami, paczkami tekstur i ustawieniami">Nowy profil…</button>
         <button id="btn-modpacks-import" title="Wgraj modpack z dysku: .mrpack z Modrinth albo .zip z CurseForge">Importuj z pliku…</button>
       </div>
       <ul id="modpacks-list"></ul>
       <div class="progress" id="modpacks-progress" hidden><div id="modpacks-bar"></div></div>
       <div id="modpacks-hint"></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="profile-new" hidden>
+    <div class="dialog glass">
+      <div class="panel-title">
+        <span>Nowy profil</span>
+        <button id="btn-close-profile" class="title-btn close" title="Zamknij">✕</button>
+      </div>
+      <form class="profile-form" id="profile-form">
+        <span class="note">Profil ma własny folder: osobne mody, światy, paczki tekstur i ustawienia. Np. „PvP” na 1.8.9 i „Survival” na najnowszej wersji.</span>
+        <label>Nazwa <input id="profile-name" placeholder="np. PvP" maxlength="40" spellcheck="false"></label>
+        <label>Wersja gry <select id="profile-version"></select></label>
+        <label>Loader <select id="profile-loader"></select></label>
+        <label class="check"><input type="checkbox" id="profile-pack" checked> <span id="profile-pack-label">Z paczką modów xBobersonx</span></label>
+        <div class="profile-buttons">
+          <button type="button" id="btn-profile-cancel">Anuluj</button>
+          <button class="primary" type="submit" id="btn-profile-create">Utwórz</button>
+        </div>
+        <div id="profile-hint"></div>
+      </form>
     </div>
   </div>
 
