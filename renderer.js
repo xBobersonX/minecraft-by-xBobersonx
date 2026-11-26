@@ -1162,7 +1162,31 @@ function modpackRow(mp) {
       $("modpacks-hint").textContent = cleanError(err);
     }
   };
-  buttons.append(play, del);
+  if (mp.kind === "profile") {
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edytuj";
+    editBtn.onclick = () => openProfileDialog(mp);
+    const copy = document.createElement("button");
+    copy.textContent = "Duplikuj";
+    copy.title = "Kopia profilu z modami, światami i ustawieniami";
+    copy.onclick = async () => {
+      copy.disabled = true;
+      $("modpacks-hint").textContent = `Kopiowanie ${mp.title}…`;
+      try {
+        const info = await window.api.duplicateProfile({ slug: mp.slug });
+        await loadVersions();
+        await loadModpacks();
+        $("modpacks-hint").textContent = `Utworzono kopię: ${info.title}`;
+      } catch (err) {
+        $("modpacks-hint").textContent = cleanError(err);
+      } finally {
+        copy.disabled = false;
+      }
+    };
+    buttons.append(play, editBtn, copy, del);
+  } else {
+    buttons.append(play, del);
+  }
   li.append(icon, body, buttons);
   return li;
 }
@@ -1304,7 +1328,12 @@ function updateProfilePack() {
     : "Z paczką modów (niedostępna dla tego wyboru)";
 }
 
-$("btn-profile-new").onclick = () => {
+let profileEditing = null; // edytowany profil albo null przy tworzeniu nowego
+
+$("btn-profile-new").onclick = () => openProfileDialog(null);
+
+function openProfileDialog(existing) {
+  profileEditing = existing;
   const select = $("profile-version");
   select.innerHTML = "";
   for (const v of loaderSets.versions) {
@@ -1318,15 +1347,51 @@ $("btn-profile-new").onclick = () => {
     $("modpacks-hint").textContent = "Brak listy wersji — sprawdź internet";
     return;
   }
-  $("profile-name").value = "";
+  $("profile-title").textContent = existing ? `Edytuj profil — ${existing.title}` : "Nowy profil";
+  $("btn-profile-create").textContent = existing ? "Zapisz" : "Utwórz";
+  $("profile-name").value = existing ? existing.title : "";
   $("profile-hint").textContent = "";
-  $("profile-pack").checked = true;
-  fillProfileLoaders();
+  if (existing) {
+    // wersja profilu może być spoza listy (np. bez internetu) — dodajemy ją, żeby nie zniknęła
+    if (![...select.options].some(o => o.value === existing.gameVersion)) {
+      const opt = document.createElement("option");
+      opt.value = existing.gameVersion;
+      opt.textContent = `Minecraft ${existing.gameVersion}`;
+      select.prepend(opt);
+    }
+    select.value = existing.gameVersion;
+    $("profile-loader").innerHTML = "";
+    fillProfileLoaders();
+    if ([...$("profile-loader").options].some(o => o.value === existing.loader)) $("profile-loader").value = existing.loader;
+    updateProfilePack();
+    $("profile-pack").checked = !!existing.pack && !$("profile-pack").disabled;
+  } else {
+    $("profile-pack").checked = true;
+    fillProfileLoaders();
+  }
   $("profile-new").hidden = false;
   $("profile-name").focus();
-};
-$("profile-version").onchange = fillProfileLoaders;
-$("profile-loader").onchange = updateProfilePack;
+}
+
+// Ostrzeżenie przy edycji: inna wersja albo loader psuje własne mody, wyłączenie paczki usuwa jej mody
+function profileWarning() {
+  const e = profileEditing;
+  if (!e) return "";
+  const version = $("profile-version").value, loader = $("profile-loader").value;
+  const pack = $("profile-pack").checked && !$("profile-pack").disabled;
+  const notes = [];
+  if (version !== e.gameVersion || loader !== e.loader) {
+    notes.push("Twoje własne mody mogą nie działać na innej wersji albo loaderze. Światy z nowszej wersji mogą nie otworzyć się na starszej.");
+  }
+  if (e.pack && (!pack || version !== e.gameVersion || loader !== e.loader)) {
+    notes.push(pack ? "Mody paczki zostaną pobrane od nowa dla nowej wersji." : "Mody paczki zostaną usunięte z profilu.");
+  }
+  return notes.join(" ");
+}
+const refreshProfileWarning = () => { $("profile-hint").textContent = profileWarning(); };
+$("profile-version").onchange = () => { fillProfileLoaders(); refreshProfileWarning(); };
+$("profile-loader").onchange = () => { updateProfilePack(); refreshProfileWarning(); };
+$("profile-pack").onchange = refreshProfileWarning;
 const closeProfile = () => { $("profile-new").hidden = true; };
 $("btn-close-profile").onclick = closeProfile;
 $("btn-profile-cancel").onclick = closeProfile;
@@ -1335,16 +1400,25 @@ $("profile-form").onsubmit = async event => {
   const button = $("btn-profile-create");
   button.disabled = true;
   try {
-    const info = await window.api.createProfile({
+    const options = {
       name: $("profile-name").value,
       gameVersion: $("profile-version").value,
       loader: $("profile-loader").value,
       pack: $("profile-pack").checked && !$("profile-pack").disabled,
-    });
+    };
+    const editing = profileEditing;
+    const info = editing
+      ? await window.api.updateProfile({ slug: editing.slug, ...options })
+      : await window.api.createProfile(options);
     closeProfile();
-    await loadVersions(`${info.gameVersion}|mp:${info.slug}`);
+    // edycja nie przestawia wybranej wersji, chyba że wybrany był właśnie ten profil
+    const current = $("version").value;
+    const wasSelected = editing && current === `${editing.gameVersion}|mp:${editing.slug}`;
+    await loadVersions(!editing || wasSelected ? `${info.gameVersion}|mp:${info.slug}` : undefined);
     await loadModpacks();
-    $("modpacks-hint").textContent = `Utworzono profil ${info.title} — wybrany na liście wersji, kliknij „Graj”`;
+    $("modpacks-hint").textContent = editing
+      ? `Zapisano profil ${info.title}`
+      : `Utworzono profil ${info.title} — wybrany na liście wersji, kliknij „Graj”`;
   } catch (err) {
     $("profile-hint").textContent = cleanError(err);
   } finally {

@@ -333,18 +333,39 @@ async function importModpack(gameDir, file, options) {
 // okno modów, światy i usuwanie działają tak samo.
 const PROFILE_LOADERS = new Set(["fabric", "forge", "neoforge", "vanilla"]);
 
-function createProfile(gameDir, { name, gameVersion, loader, pack }) {
+// Sprawdza nazwę profilu (exceptSlug: profil, który właśnie edytujemy, może zostać przy swojej nazwie)
+function profileTitle(gameDir, name, exceptSlug) {
   const title = String(name || "").trim().replace(/\s+/g, " ");
   if (!title) throw new Error("Wpisz nazwę profilu");
   if (title.length > 40) throw new Error("Nazwa profilu może mieć najwyżej 40 znaków");
-  if (!/^\d+\.\d+(\.\d+)?$/.test(String(gameVersion))) throw new Error("Wybierz wersję gry");
-  if (!PROFILE_LOADERS.has(loader)) throw new Error("Wybierz loader");
-  if (listModpacks(gameDir).some(m => m.kind === "profile" && m.title.toLowerCase() === title.toLowerCase())) {
+  if (listModpacks(gameDir).some(m => m.kind === "profile" && m.slug !== exceptSlug && m.title.toLowerCase() === title.toLowerCase())) {
     throw new Error(`Profil „${title}” już istnieje`);
   }
+  return title;
+}
+
+function checkProfileTarget(gameVersion, loader) {
+  if (!/^\d+\.\d+(\.\d+)?$/.test(String(gameVersion))) throw new Error("Wybierz wersję gry");
+  if (!PROFILE_LOADERS.has(loader)) throw new Error("Wybierz loader");
+}
+
+function freeProfileSlug(gameDir, title) {
   const base = `profile-${slugFromName(title).slice("file-".length)}`;
   let slug = base;
   for (let i = 2; fs.existsSync(modpackDir(gameDir, slug)); i++) slug = `${base}-${i}`;
+  return slug;
+}
+
+function readProfile(gameDir, slug) {
+  const info = readModpack(gameDir, slug);
+  if (info.kind !== "profile") throw new Error("To nie jest profil");
+  return info;
+}
+
+function createProfile(gameDir, { name, gameVersion, loader, pack }) {
+  const title = profileTitle(gameDir, name);
+  checkProfileTarget(gameVersion, loader);
+  const slug = freeProfileSlug(gameDir, title);
   const dir = modpackDir(gameDir, slug);
   for (const sub of ["mods", "saves", "resourcepacks", "config"]) fs.mkdirSync(path.join(dir, sub), { recursive: true });
   const info = {
@@ -355,8 +376,43 @@ function createProfile(gameDir, { name, gameVersion, loader, pack }) {
   return info;
 }
 
+// Zmienia nazwę, wersję gry, loader albo paczkę modów; folder (a z nim światy i ustawienia) zostaje ten sam.
+// Zwraca { before, after } — main.js na tej podstawie sprząta mody paczki po starej wersji/loaderze.
+function updateProfile(gameDir, slug, { name, gameVersion, loader, pack }) {
+  const before = readProfile(gameDir, slug);
+  const title = profileTitle(gameDir, name, slug);
+  checkProfileTarget(gameVersion, loader);
+  const after = { ...before, title, gameVersion: String(gameVersion), loader, pack: !!pack && loader !== "vanilla", updated: Date.now() };
+  fs.writeFileSync(path.join(modpackDir(gameDir, slug), INFO), JSON.stringify(after, null, 2));
+  return { before, after };
+}
+
+// Kopia profilu z modami, światami, paczkami tekstur i ustawieniami
+function duplicateProfile(gameDir, slug, { log } = {}) {
+  const source = readProfile(gameDir, slug);
+  let title = `${source.title} (kopia)`.slice(0, 40);
+  for (let i = 2; listModpacks(gameDir).some(m => m.kind === "profile" && m.title.toLowerCase() === title.toLowerCase()); i++) {
+    title = `${source.title.slice(0, 30)} (kopia ${i})`;
+  }
+  const newSlug = freeProfileSlug(gameDir, title);
+  const from = modpackDir(gameDir, slug), to = modpackDir(gameDir, newSlug);
+  if (log) log(`[profil] Kopiowanie ${source.title}...`);
+  // logi i zrzuty awarii nie są potrzebne w kopii
+  const skip = new Set(["logs", "crash-reports"].map(n => path.resolve(from, n).toLowerCase()));
+  // Node na Windows podaje ścieżki z przedrostkiem \\?\ — bez niego porównujemy z listą pomijanych
+  const plain = src => path.resolve(String(src).replace(/^\\\\\?\\/, "")).toLowerCase();
+  fs.cpSync(from, to, { recursive: true, filter: src => !skip.has(plain(src)) });
+  const info = { ...source, id: `profile:${newSlug}`, slug: newSlug, title, created: Date.now() };
+  delete info.updated;
+  fs.writeFileSync(path.join(to, INFO), JSON.stringify(info, null, 2));
+  return info;
+}
+
 function deleteModpack(gameDir, slug) {
   fs.rmSync(modpackDir(gameDir, slug), { recursive: true, force: true });
 }
 
-module.exports = { listModpacks, readModpack, searchModpacks, installModpack, importModpack, createProfile, deleteModpack, modpackDir };
+module.exports = {
+  listModpacks, readModpack, searchModpacks, installModpack, importModpack,
+  createProfile, updateProfile, duplicateProfile, deleteModpack, modpackDir,
+};

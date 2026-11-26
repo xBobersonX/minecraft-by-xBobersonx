@@ -679,7 +679,31 @@ async function updateOwnMod(instanceDir, gameVersion, file, log) {
   return main.name;
 }
 
+// Usuwa z instancji mody paczki (po wyłączeniu paczki w profilu albo zmianie wersji/loadera).
+// Mody gracza i ustawienia zostają; przy następnym starcie paczka zainstaluje się od nowa, jeśli jest włączona.
+function removePack(instanceDir, target) {
+  const modsDir = packModsDir(instanceDir, target);
+  let removed = 0;
+  for (const f of readPackList(instanceDir)) {
+    for (const name of [f.name, f.name + DISABLED]) {
+      const file = path.join(modsDir, name);
+      if (fs.existsSync(file)) {
+        fs.rmSync(file, { force: true });
+        removed++;
+      }
+    }
+  }
+  for (const name of [".xbobersonx-pack.json", ".xbobersonx-pack-check.json"]) {
+    fs.rmSync(path.join(instanceDir, name), { force: true });
+  }
+  // pusty folder paczki (preinstalled/ albo mods/<wersja>) nie jest potrzebny
+  if (modsDir !== path.join(instanceDir, "mods")) {
+    try { if (!fs.readdirSync(modsDir).length) fs.rmdirSync(modsDir); } catch {}
+  }
+  return removed;
+}
+
 module.exports = {
-  installPack, packName: PACK.name, forgePack, loaderFor, packFor, packModsDir, listMods, setModEnabled, searchMods, installOwnMod,
+  installPack, removePack, packName: PACK.name, forgePack, loaderFor, packFor, packModsDir, listMods, setModEnabled, searchMods, installOwnMod,
   checkOwnUpdates, updateOwnMod, pool, sha1,
 };

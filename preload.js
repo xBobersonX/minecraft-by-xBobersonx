@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld("api", {
   isWindowMaximized: () => ipcRenderer.invoke("window:is-maximized"),
   deleteModpack: opts => ipcRenderer.invoke("modpacks:delete", opts),
   createProfile: opts => ipcRenderer.invoke("profiles:create", opts),
+  updateProfile: opts => ipcRenderer.invoke("profiles:update", opts),
+  duplicateProfile: opts => ipcRenderer.invoke("profiles:duplicate", opts),
   toggleMod: opts => ipcRenderer.invoke("mods:toggle", opts),
   searchMods: opts => ipcRenderer.invoke("mods:search", opts),
   installMod: opts => ipcRenderer.invoke("mods:install", opts),

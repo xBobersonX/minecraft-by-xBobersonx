@@ -7,7 +7,7 @@ const { Auth } = require("msmc");
 const { autoUpdater } = require("electron-updater");
 const AdmZip = require("adm-zip");
 const {
-  installPack, packName, forgePack, packFor, packModsDir, listMods, setModEnabled, searchMods, installOwnMod, checkOwnUpdates, updateOwnMod,
+  installPack, removePack, packName, forgePack, packFor, packModsDir, listMods, setModEnabled, searchMods, installOwnMod, checkOwnUpdates, updateOwnMod,
 } = require("./modpack");
 const mrpack = require("./mrpack");
 const { getJava, JVM_FLAGS } = require("./java");
@@ -710,8 +710,8 @@ ipcMain.handle("modpacks:import", async () => {
   });
 });
 // Własne profile: { name, gameVersion, loader: fabric|forge|neoforge|vanilla, pack }
-ipcMain.handle("profiles:create", async (_e, options) => {
-  const { gameVersion, loader } = options || {};
+// Czy wybrany loader działa na danej wersji gry
+async function checkProfileLoader(gameVersion, loader) {
   const supported = {
     vanilla: async () => true,
     fabric: async () => (await cachedJson("https://meta.fabricmc.net/v2/versions/game", "fabric_versions")).data.some(v => v.version === gameVersion),
@@ -722,7 +722,30 @@ ipcMain.handle("profiles:create", async (_e, options) => {
   if (supported && !(await supported().catch(() => false))) {
     throw new Error(`${names[loader]} nie jest dostępny dla Minecrafta ${gameVersion}`);
   }
+}
+
+ipcMain.handle("profiles:create", async (_e, options) => {
+  await checkProfileLoader(options.gameVersion, options.loader);
   return mrpack.createProfile(GAME_DIR, options);
+});
+
+ipcMain.handle("profiles:update", async (_e, { slug, ...options }) => {
+  if (gameRunning) throw new Error("Zamknij grę, zanim zmienisz profil");
+  await checkProfileLoader(options.gameVersion, options.loader);
+  const oldTarget = modTarget(mrpack.readModpack(GAME_DIR, slug).gameVersion, `mp:${slug}`);
+  const { before, after } = mrpack.updateProfile(GAME_DIR, slug, options);
+  // mody paczki pasują tylko do jednej wersji i loadera — po zmianie albo wyłączeniu paczki usuwamy stare
+  const moved = before.gameVersion !== after.gameVersion || before.loader !== after.loader;
+  if (before.pack && (!after.pack || moved)) {
+    const removed = removePack(mrpack.modpackDir(GAME_DIR, slug), oldTarget);
+    logToConsole(`[profil] Usunięto ${removed} modów paczki z profilu ${after.title}`);
+  }
+  return { ...after, moved };
+});
+
+ipcMain.handle("profiles:duplicate", async (_e, { slug }) => {
+  if (gameRunning) throw new Error("Zamknij grę, zanim skopiujesz profil");
+  return mrpack.duplicateProfile(GAME_DIR, slug, { log: logToConsole });
 });
 
 ipcMain.handle("modpacks:delete", async (_e, { slug, title }) => {
