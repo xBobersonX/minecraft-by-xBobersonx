@@ -359,13 +359,30 @@ function freeProfileSlug(gameDir, title) {
   return slug;
 }
 
+// RAM, Java i argumenty JVM profilu; puste = jak w ustawieniach launchera
+function launchSettings({ ram, javaArgs, javaPath } = {}) {
+  const out = { ram: null, javaArgs: "", javaPath: null };
+  if (ram !== undefined && ram !== null && ram !== "") {
+    const gb = Number(ram);
+    if (!Number.isInteger(gb) || gb < 1 || gb > 64) throw new Error("RAM profilu: wybierz od 1 do 64 GB");
+    out.ram = gb;
+  }
+  out.javaArgs = String(javaArgs || "").trim().slice(0, 500);
+  if (javaPath) {
+    const file = path.resolve(String(javaPath));
+    if (!/^javaw?\.exe$/i.test(path.basename(file)) || !fs.existsSync(file)) throw new Error("Wybierz plik java.exe albo javaw.exe");
+    out.javaPath = file;
+  }
+  return out;
+}
+
 function readProfile(gameDir, slug) {
   const info = readModpack(gameDir, slug);
   if (info.kind !== "profile") throw new Error("To nie jest profil");
   return info;
 }
 
-function createProfile(gameDir, { name, gameVersion, loader, pack }) {
+function createProfile(gameDir, { name, gameVersion, loader, pack, ...launch }) {
   const title = profileTitle(gameDir, name);
   checkProfileTarget(gameVersion, loader);
   const slug = freeProfileSlug(gameDir, title);
@@ -373,7 +390,7 @@ function createProfile(gameDir, { name, gameVersion, loader, pack }) {
   for (const sub of ["mods", "saves", "resourcepacks", "config"]) fs.mkdirSync(path.join(dir, sub), { recursive: true });
   const info = {
     id: `profile:${slug}`, slug, title, icon: null, version: "", kind: "profile",
-    gameVersion: String(gameVersion), loader, pack: !!pack && loader !== "vanilla", created: Date.now(),
+    gameVersion: String(gameVersion), loader, pack: !!pack && loader !== "vanilla", ...launchSettings(launch), created: Date.now(),
   };
   fs.writeFileSync(path.join(dir, INFO), JSON.stringify(info, null, 2));
   return info;
@@ -381,11 +398,14 @@ function createProfile(gameDir, { name, gameVersion, loader, pack }) {
 
 // Zmienia nazwę, wersję gry, loader albo paczkę modów; folder (a z nim światy i ustawienia) zostaje ten sam.
 // Zwraca { before, after } — main.js na tej podstawie sprząta mody paczki po starej wersji/loaderze.
-function updateProfile(gameDir, slug, { name, gameVersion, loader, pack }) {
+function updateProfile(gameDir, slug, { name, gameVersion, loader, pack, ...launch }) {
   const before = readProfile(gameDir, slug);
   const title = profileTitle(gameDir, name, slug);
   checkProfileTarget(gameVersion, loader);
-  const after = { ...before, title, gameVersion: String(gameVersion), loader, pack: !!pack && loader !== "vanilla", updated: Date.now() };
+  const after = {
+    ...before, title, gameVersion: String(gameVersion), loader, pack: !!pack && loader !== "vanilla",
+    ...launchSettings(launch), updated: Date.now(),
+  };
   fs.writeFileSync(path.join(modpackDir(gameDir, slug), INFO), JSON.stringify(after, null, 2));
   return { before, after };
 }
@@ -519,6 +539,7 @@ async function exportProfile(gameDir, slug, file, { withWorlds, loaderVersion, p
   zip.addFile("modrinth.index.json", Buffer.from(JSON.stringify(index, null, 2)));
   zip.addFile(PROFILE_MARKER, Buffer.from(JSON.stringify({
     format: 1, title: info.title, gameVersion: info.gameVersion, loader: info.loader, pack: !!info.pack,
+    ram: info.ram || null, javaArgs: info.javaArgs || "",
     packFiles: local.filter(f => f.pack).map(f => f.path),
   }, null, 2)));
   await zip.writeZipPromise(file);
@@ -551,7 +572,9 @@ async function importProfile(gameDir, zip, marker, { log, progress }) {
   const base = String(marker.title || "Profil").trim().slice(0, 34) || "Profil";
   let name = base;
   for (let i = 2; listModpacks(gameDir).some(m => m.kind === "profile" && m.title.toLowerCase() === name.toLowerCase()); i++) name = `${base} (${i})`;
-  const info = createProfile(gameDir, { name, gameVersion: marker.gameVersion, loader: marker.loader, pack: marker.pack });
+  let launch = {};
+  try { launch = launchSettings({ ram: marker.ram, javaArgs: marker.javaArgs }); } catch {}
+  const info = createProfile(gameDir, { name, gameVersion: marker.gameVersion, loader: marker.loader, pack: marker.pack, ...launch });
   const dir = modpackDir(gameDir, info.slug);
   try {
     let done = 0;

@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld("api", {
   updateProfile: opts => ipcRenderer.invoke("profiles:update", opts),
   duplicateProfile: opts => ipcRenderer.invoke("profiles:duplicate", opts),
   exportProfile: opts => ipcRenderer.invoke("profiles:export", opts),
+  pickJava: () => ipcRenderer.invoke("profiles:pickJava"),
+  javaVersion: opts => ipcRenderer.invoke("profiles:javaVersion", opts),
   modpackMenu: opts => ipcRenderer.invoke("modpacks:menu", opts),
   listBackups: opts => ipcRenderer.invoke("backups:list", opts),
   createBackup: opts => ipcRenderer.invoke("backups:create", opts),

@@ -265,7 +265,8 @@
     const metaText = id => $(id).querySelector(".meta-text");
     metaText("meta-version").textContent = sel.version ? `${sel.version} · ${sel.loader}` : "—";
     metaText("meta-time").textContent = duration(playtime.versions[sel.key] || 0);
-    $("meta-time").title = T("Czas gry na tej wersji", "Playtime on this version");
+    $("meta-time").title = T("Czas gry na tej wersji — kliknij, żeby zobaczyć statystyki", "Playtime on this version — click for stats");
+    $("meta-time").onclick = () => window.openStats && window.openStats();
     $("meta-mods").title = T("Włączone mody", "Enabled mods");
     if (sel.version) {
       try {

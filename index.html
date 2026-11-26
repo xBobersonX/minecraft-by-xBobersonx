@@ -254,6 +254,7 @@
                 Miejsce na dysku
               </button>
               <button id="btn-game-folder">Otwórz folder gry</button>
+              <button id="btn-stats">Statystyki gry</button>
             </div>
           </section>
 
@@ -373,12 +374,39 @@
         <label>Wersja gry <select id="profile-version"></select></label>
         <label>Loader <select id="profile-loader"></select></label>
         <label class="check"><input type="checkbox" id="profile-pack" checked> <span id="profile-pack-label">Z paczką modów xBobersonx</span></label>
+        <details class="profile-advanced" id="profile-advanced">
+          <summary>Uruchamianie: RAM, Java, argumenty</summary>
+          <label>RAM <select id="profile-ram"></select></label>
+          <div class="profile-java">
+            <span>Java</span>
+            <div class="profile-java-row">
+              <span id="profile-java-label">Automatycznie (launcher pobiera właściwą)</span>
+              <button type="button" id="btn-profile-java">Wybierz…</button>
+              <button type="button" id="btn-profile-java-auto" hidden>Automatycznie</button>
+            </div>
+          </div>
+          <label>Argumenty Javy <input id="profile-args" placeholder="Puste = jak w ustawieniach" spellcheck="false" maxlength="500"></label>
+        </details>
         <div class="profile-buttons">
           <button type="button" id="btn-profile-cancel">Anuluj</button>
           <button class="primary" type="submit" id="btn-profile-create">Utwórz</button>
         </div>
         <div id="profile-hint"></div>
       </form>
+    </div>
+  </div>
+
+  <div class="overlay" id="stats" hidden>
+    <div class="dialog glass disk-dialog">
+      <div class="panel-title">
+        <span>Statystyki gry</span>
+        <button id="btn-close-stats" class="title-btn close" title="Zamknij">✕</button>
+      </div>
+      <div class="stats-tiles" id="stats-tiles"></div>
+      <div class="stats-chart-title">Ostatnie 14 dni</div>
+      <div class="stats-chart" id="stats-chart"></div>
+      <ul id="stats-list"></ul>
+      <div class="note" id="stats-note"></div>
     </div>
   </div>
 

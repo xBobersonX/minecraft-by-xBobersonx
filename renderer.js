@@ -1135,9 +1135,14 @@ function modpackRow(mp) {
   const meta = document.createElement("div");
   meta.className = "result-meta";
   const loaderName = LOADER_NAMES[mp.loader] || "Fabric";
-  meta.textContent = mp.kind === "profile"
-    ? `Profil · Minecraft ${mp.gameVersion} · ${loaderName}${mp.pack ? ` · z paczką ${loaderSets.packName || "xBobersonx"}` : ""}`
-    : `Minecraft ${mp.gameVersion} · ${loaderName}${mp.version ? ` · wersja ${mp.version}` : ""}`;
+  const played = instancePlay(`mp:${mp.slug}`);
+  meta.textContent = [
+    ...(mp.kind === "profile"
+      ? ["Profil", `Minecraft ${mp.gameVersion}`, loaderName, ...(mp.pack ? [`z paczką ${loaderSets.packName || "xBobersonx"}`] : []), ...(mp.ram ? [`${mp.ram} GB RAM`] : [])]
+      : [`Minecraft ${mp.gameVersion}`, loaderName, ...(mp.version ? [`wersja ${mp.version}`] : [])]),
+    played.seconds ? `grano ${formatDuration(played.seconds)}` : "jeszcze nie grano",
+  ].join(" · ");
+  if (played.last) meta.title = `Ostatnio: ${new Date(played.last).toLocaleString("pl-PL")} · sesji: ${played.sessions}`;
   body.append(title, meta);
 
   const buttons = document.createElement("div");
@@ -1206,6 +1211,161 @@ function modpackRow(mp) {
   li.append(icon, body, buttons);
   return li;
 }
+
+// ---------- Statystyki gry ----------
+let playData = { versions: {}, history: [] };
+
+function formatDuration(seconds) {
+  const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
+  if (h === 0) return `${Math.max(1, m)} min`;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+// Suma dla instancji (profil może zmieniać wersję gry — czas liczy się razem)
+function instancePlay(instance) {
+  const out = { seconds: 0, sessions: 0, last: 0, longest: 0 };
+  for (const [key, secs] of Object.entries(playData.versions || {})) {
+    if (key.slice(key.indexOf("|") + 1) !== instance) continue;
+    const s = (playData.stats || {})[key] || {};
+    out.seconds += secs;
+    out.sessions += s.sessions || 0;
+    out.last = Math.max(out.last, s.last || 0);
+    out.longest = Math.max(out.longest, s.longest || 0);
+  }
+  // „ostatnio” ze starszych wersji launchera, które nie zapisywały statystyk
+  for (const h of playData.history || []) if (h.key && h.key.slice(h.key.indexOf("|") + 1) === instance) out.last = Math.max(out.last, h.at || 0);
+  return out;
+}
+
+function playName(version, instance, modpacks) {
+  if (instance.startsWith("mp:")) {
+    const mp = modpacks.find(m => m.slug === instance.slice(3));
+    if (mp) return `${mp.kind === "profile" ? "🧩" : "📦"} ${mp.title}`;
+    const slug = instance.slice(3);
+    return slug.startsWith("profile-") ? `Usunięty profil (${slug.slice(8)})` : `Usunięty modpack (${slug.replace(/^file-/, "")})`;
+  }
+  const opt = [...$("version").options].find(o => o.value === `${version}|${instance}`);
+  if (opt) return opt.textContent;
+  const names = { pack: `z paczką ${loaderSets.packName || "xBobersonx"}`, forge: "Forge", neoforge: "NeoForge", vanilla: "bez modów", fabric: "Fabric" };
+  return `Minecraft ${version}${names[instance] ? ` · ${names[instance]}` : ""}`;
+}
+
+async function openStats() {
+  $("settings").hidden = true;
+  $("stats").hidden = false;
+  let modpacks = [];
+  try {
+    [playData, modpacks] = await Promise.all([window.api.getPlaytime(), window.api.listModpacks()]);
+  } catch {}
+  const versions = playData.versions || {}, stats = playData.stats || {}, days = playData.days || {};
+
+  // wiersze: profile i modpacki razem ze wszystkich wersji, reszta osobno na wersję
+  const rows = new Map();
+  for (const [key, secs] of Object.entries(versions)) {
+    const version = key.slice(0, key.indexOf("|")), instance = key.slice(key.indexOf("|") + 1);
+    const id = instance.startsWith("mp:") ? instance : key;
+    const row = rows.get(id) || { name: playName(version, instance, modpacks), seconds: 0, sessions: 0, last: 0 };
+    const s = stats[key] || {};
+    row.seconds += secs;
+    row.sessions += s.sessions || 0;
+    row.last = Math.max(row.last, s.last || 0);
+    rows.set(id, row);
+  }
+  for (const h of playData.history || []) {
+    if (!h.key) continue;
+    const instance = h.key.slice(h.key.indexOf("|") + 1);
+    const row = rows.get(instance.startsWith("mp:") ? instance : h.key);
+    if (row) row.last = Math.max(row.last, h.at || 0);
+  }
+  const list = [...rows.values()].filter(r => r.seconds > 0).sort((a, b) => b.seconds - a.seconds);
+  const total = list.reduce((sum, r) => sum + r.seconds, 0);
+  const sessions = Object.values(stats).reduce((sum, s) => sum + (s.sessions || 0), 0);
+  const longest = Object.values(stats).reduce((max, s) => Math.max(max, s.longest || 0), 0);
+  const dayKey = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const last14 = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() - i);
+    last14.push({ date: d, seconds: days[dayKey(d)] || 0 });
+  }
+  const week = last14.slice(-7).reduce((sum, d) => sum + d.seconds, 0);
+
+  const tiles = $("stats-tiles");
+  tiles.innerHTML = "";
+  for (const [value, label] of [
+    [total ? formatDuration(total) : "0 min", "łącznie"],
+    [week ? formatDuration(week) : "0 min", "ostatnie 7 dni"],
+    [sessions ? String(sessions) : "—", "sesji gry"],
+    [longest ? formatDuration(longest) : "—", "najdłuższa sesja"],
+  ]) {
+    const tile = document.createElement("div");
+    tile.className = "stats-tile";
+    const b = document.createElement("b");
+    b.textContent = value;
+    const span = document.createElement("span");
+    span.textContent = label;
+    tile.append(b, span);
+    tiles.appendChild(tile);
+  }
+
+  const chart = $("stats-chart");
+  chart.innerHTML = "";
+  const maxDay = Math.max(...last14.map(d => d.seconds), 1);
+  for (const d of last14) {
+    const col = document.createElement("div");
+    col.className = "day";
+    col.title = `${d.date.toLocaleDateString("pl-PL", { weekday: "long", day: "numeric", month: "long" })}: ${d.seconds ? formatDuration(d.seconds) : "nie grano"}`;
+    const bar = document.createElement("div");
+    bar.className = d.seconds ? "bar" : "bar empty";
+    bar.style.height = `${d.seconds ? Math.max(6, (d.seconds / maxDay) * 100) : 3}%`;
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = d.date.toLocaleDateString("pl-PL", { weekday: "short" }).slice(0, 2);
+    col.append(bar, label);
+    chart.appendChild(col);
+  }
+
+  const ul = $("stats-list");
+  ul.innerHTML = "";
+  if (!list.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "Jeszcze nie grano — statystyki pojawią się po pierwszej grze";
+    ul.appendChild(li);
+  }
+  for (const r of list) {
+    const li = document.createElement("li");
+    li.className = "result";
+    const body = document.createElement("div");
+    body.className = "result-body";
+    const title = document.createElement("div");
+    title.className = "result-title";
+    title.textContent = r.name;
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    meta.textContent = [
+      formatDuration(r.seconds),
+      `${Math.round((r.seconds / total) * 100)}% czasu`,
+      ...(r.sessions ? [`sesji: ${r.sessions}`] : []),
+      ...(r.last ? [`ostatnio ${new Date(r.last).toLocaleDateString("pl-PL", { day: "numeric", month: "short", year: "numeric" })}`] : []),
+    ].join(" · ");
+    const share = document.createElement("div");
+    share.className = "stats-share";
+    const fill = document.createElement("div");
+    fill.style.width = `${(r.seconds / list[0].seconds) * 100}%`;
+    share.appendChild(fill);
+    body.append(title, meta, share);
+    li.appendChild(body);
+    ul.appendChild(li);
+  }
+  $("stats-note").textContent = playData.stats
+    ? "Liczy się czas od startu gry do jej zamknięcia."
+    : "Sesje, najdłuższa sesja i wykres dni liczą się od tej wersji launchera — wcześniejszy czas gry jest wliczony do sumy.";
+}
+window.openStats = openStats;
+$("btn-stats").onclick = openStats;
+$("btn-close-stats").onclick = () => { $("stats").hidden = true; };
 
 // ---------- Kopie zapasowe światów ----------
 let backupsOf = null; // profil albo modpack, którego kopie są otwarte
@@ -1373,6 +1533,7 @@ $("btn-modpacks-import").onclick = async () => {
 };
 
 async function loadModpacks() {
+  try { playData = await window.api.getPlaytime(); } catch {}
   modpacksInstalled = await window.api.listModpacks();
   renderModpacks();
 }
@@ -1473,6 +1634,7 @@ function openProfileDialog(existing) {
     $("modpacks-hint").textContent = "Brak listy wersji — sprawdź internet";
     return;
   }
+  fillProfileLaunch(existing);
   $("profile-title").textContent = existing ? `Edytuj profil — ${existing.title}` : "Nowy profil";
   $("btn-profile-create").textContent = existing ? "Zapisz" : "Utwórz";
   $("profile-name").value = existing ? existing.title : "";
@@ -1498,6 +1660,63 @@ function openProfileDialog(existing) {
   $("profile-new").hidden = false;
   $("profile-name").focus();
 }
+
+// RAM, Java i argumenty profilu (puste = jak w ustawieniach launchera)
+let profileJava = null;
+function fillProfileLaunch(existing) {
+  const ram = $("profile-ram");
+  ram.innerHTML = "";
+  const global = Number($("ram").value) || recommendedRam();
+  const def = document.createElement("option");
+  def.value = "";
+  def.textContent = `Jak w ustawieniach (${global} GB)`;
+  ram.appendChild(def);
+  const max = Math.max(2, systemRam);
+  for (let gb = 1; gb <= max; gb++) {
+    const opt = document.createElement("option");
+    opt.value = String(gb);
+    opt.textContent = `${gb} GB${gb === recommendedRam() ? " (zalecane)" : ""}${max - gb < 2 ? " — mało zostanie dla Windowsa" : ""}`;
+    ram.appendChild(opt);
+  }
+  if (existing && existing.ram && existing.ram > max) {
+    const opt = document.createElement("option");
+    opt.value = String(existing.ram);
+    opt.textContent = `${existing.ram} GB`;
+    ram.appendChild(opt);
+  }
+  ram.value = existing && existing.ram ? String(existing.ram) : "";
+  $("profile-args").value = (existing && existing.javaArgs) || "";
+  setProfileJava(existing && existing.javaPath ? { path: existing.javaPath, version: null } : null);
+  if (existing && existing.javaPath) {
+    window.api.javaVersion({ path: existing.javaPath }).then(version => {
+      if (profileJava && profileJava.path === existing.javaPath) setProfileJava({ path: existing.javaPath, version });
+    }).catch(() => {});
+  }
+  // rozwinięte, gdy profil ma coś ustawione
+  $("profile-advanced").open = !!(existing && (existing.ram || existing.javaArgs || existing.javaPath));
+}
+function setProfileJava(java) {
+  profileJava = java;
+  const label = $("profile-java-label");
+  if (!java) {
+    label.textContent = "Automatycznie (launcher pobiera właściwą)";
+    label.title = "";
+  } else {
+    label.textContent = `${java.version ? `Java ${java.version} — ` : ""}${java.path}`;
+    label.title = java.path;
+  }
+  $("btn-profile-java-auto").hidden = !java;
+}
+$("btn-profile-java").onclick = async () => {
+  try {
+    const java = await window.api.pickJava();
+    if (java) setProfileJava(java);
+    $("profile-hint").textContent = java && !java.version ? "Nie udało się sprawdzić wersji tej Javy — gra może się nie uruchomić" : "";
+  } catch (err) {
+    $("profile-hint").textContent = cleanError(err);
+  }
+};
+$("btn-profile-java-auto").onclick = () => setProfileJava(null);
 
 // Ostrzeżenie przy edycji: inna wersja albo loader psuje własne mody, wyłączenie paczki usuwa jej mody
 function profileWarning() {
@@ -1531,6 +1750,9 @@ $("profile-form").onsubmit = async event => {
       gameVersion: $("profile-version").value,
       loader: $("profile-loader").value,
       pack: $("profile-pack").checked && !$("profile-pack").disabled,
+      ram: $("profile-ram").value ? Number($("profile-ram").value) : null,
+      javaArgs: $("profile-args").value.trim(),
+      javaPath: profileJava ? profileJava.path : null,
     };
     const editing = profileEditing;
     const info = editing

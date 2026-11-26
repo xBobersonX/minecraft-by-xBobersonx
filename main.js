@@ -252,7 +252,19 @@ ipcMain.handle("home:playtime", () => readJson(PLAYTIME_FILE, { versions: {}, hi
 
 function recordPlay(entry, seconds) {
   const data = readJson(PLAYTIME_FILE, { versions: {}, history: [] });
-  data.versions[entry.key] = (data.versions[entry.key] || 0) + Math.max(0, Math.round(seconds));
+  const secs = Math.max(0, Math.round(seconds));
+  data.versions[entry.key] = (data.versions[entry.key] || 0) + secs;
+  // statystyki (od 1.23.0): liczba sesji, ostatnia gra, najdłuższa sesja i czas w poszczególnych dniach
+  data.stats = data.stats || {};
+  const s = data.stats[entry.key] || { sessions: 0, last: 0, longest: 0 };
+  data.stats[entry.key] = { sessions: s.sessions + 1, last: entry.at, longest: Math.max(s.longest, secs) };
+  data.days = data.days || {};
+  const d = new Date(entry.at);
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  data.days[day] = (data.days[day] || 0) + secs;
+  // trzymamy rok dni — starsze nie są potrzebne do wykresu
+  const days = Object.keys(data.days).sort();
+  for (const old of days.slice(0, Math.max(0, days.length - 366))) delete data.days[old];
   const same = h => h.key === entry.key && (h.server || null) === (entry.server || null) && (h.world || null) === (entry.world || null);
   data.history = [entry, ...data.history.filter(h => !same(h))].slice(0, 12);
   writeJson(PLAYTIME_FILE, data);
@@ -751,6 +763,32 @@ ipcMain.handle("profiles:update", async (_e, { slug, ...options }) => {
   }
   return { ...after, moved };
 });
+
+// Wybór własnej Javy dla profilu: { path, version } albo null
+ipcMain.handle("profiles:pickJava", async () => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: t("Wybierz Javę (java.exe albo javaw.exe)"),
+    filters: [{ name: "Java", extensions: ["exe"] }],
+    properties: ["openFile"],
+  });
+  if (canceled || !filePaths[0]) return null;
+  const file = filePaths[0];
+  if (!/^javaw?\.exe$/i.test(path.basename(file))) throw new Error("Wybierz plik java.exe albo javaw.exe (folder bin w Javie)");
+  return { path: file, version: await javaVersion(file) };
+});
+ipcMain.handle("profiles:javaVersion", (_e, { path: file }) => javaVersion(file));
+
+// „21.0.5” z java -version; null, gdy się nie da
+function javaVersion(file) {
+  const exe = file.replace(/javaw\.exe$/i, "java.exe");
+  return new Promise(resolve => {
+    if (!fs.existsSync(exe)) return resolve(null);
+    require("child_process").execFile(exe, ["-version"], { timeout: 10000, windowsHide: true }, (err, stdout, stderr) => {
+      const m = /version "([^"]+)"/.exec(`${stderr}${stdout}`);
+      resolve(m ? m[1] : null);
+    });
+  });
+}
 
 ipcMain.handle("profiles:duplicate", async (_e, { slug }) => {
   if (gameRunning) throw new Error("Zamknij grę, zanim skopiujesz profil");
@@ -1302,7 +1340,15 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   const forgeKind = modernForge ? loader : modpackForge ? modpack.loader : null;
   const forge = (!modpack && !modernForge && forgePack(version)) || oldForgeProfile;
   const target = modTarget(version, loader);
-  const javaPath = await getJava(version, {
+  // profil może mieć własny RAM, Javę i argumenty JVM (puste = jak w ustawieniach)
+  if (profile && profile.ram) ram = profile.ram;
+  if (profile && profile.javaArgs) javaArgs = profile.javaArgs;
+  const ownJava = profile && profile.javaPath;
+  if (ownJava && !fs.existsSync(ownJava)) throw new Error(`Nie ma Javy wybranej w profilu (${ownJava}) — zmień ją w „Edytuj”`);
+  if (profile && (profile.ram || profile.javaArgs || ownJava)) {
+    send("game:log", `[profil] ${profile.title}: ${ram} GB RAM${ownJava ? `, Java ${ownJava}` : ""}${profile.javaArgs ? `, argumenty: ${profile.javaArgs}` : ""}`);
+  }
+  const javaPath = ownJava || await getJava(version, {
     runtimeRoot: path.join(GAME_DIR, "runtime"),
     manifestUrl: MANIFEST_URL,
     localJson: path.join(GAME_DIR, "versions", version, `${version}.json`),
