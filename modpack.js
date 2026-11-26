@@ -17,9 +17,10 @@ const PACK_LOGIC = 3; // zmiana sposobu składania paczki — wymusza jej ponown
 
 // „Cel” paczki: sama wersja gry ("1.21.11" — Fabric albo stary Forge z sekcji „forge”)
 // albo nowy Forge z dopiskiem ("forge:1.20.1" — sekcja „forgeModern”).
+// "neoforge:1.21.1" — NeoForge (sekcja „neoforgeModern”).
 function splitTarget(target) {
-  const m = /^forge:(.+)$/.exec(target);
-  return m ? { version: m[1], modern: true } : { version: target, modern: false };
+  const m = /^(forge|neoforge):(.+)$/.exec(target);
+  return m ? { version: m[2], modern: true, kind: m[1] } : { version: target, modern: false, kind: null };
 }
 
 // Wersja gry na starym Forge (np. 1.8.9): { build, name, mods } z modpack.json, inaczej null
@@ -29,13 +30,16 @@ function forgePack(target) {
 }
 
 function loaderFor(target) {
-  return splitTarget(target).modern || forgePack(target) ? "forge" : "fabric";
+  const { kind } = splitTarget(target);
+  if (kind) return kind;
+  return forgePack(target) ? "forge" : "fabric";
 }
 
 // Lista modów paczki dla danej wersji gry
 function packFor(target) {
   const forge = forgePack(target);
-  const modern = splitTarget(target).modern && PACK.forgeModern;
+  const { kind } = splitTarget(target);
+  const modern = kind === "neoforge" ? PACK.neoforgeModern : kind === "forge" ? PACK.forgeModern : null;
   if (forge) return { name: forge.name, libraries: [], mods: forge.mods };
   if (modern) return { name: modern.name, libraries: modern.libraries || [], mods: modern.mods };
   return { name: PACK.name, libraries: PACK.libraries, mods: PACK.mods };
@@ -329,7 +333,7 @@ function removeLegacyPack(instanceDir) {
 async function installPack(instanceDir, gameVersion, { log, progress }) {
   removeLegacyPack(instanceDir);
   const pack = packFor(gameVersion);
-  const forge = loaderFor(gameVersion) === "forge";
+  const forge = loaderFor(gameVersion) !== "fabric";
   const modsDir = packModsDir(instanceDir, gameVersion);
   // lista poza preinstalled/, bo Fabric ostrzega o plikach innych niż .jar w tym folderze
   const listFile = path.join(instanceDir, ".xbobersonx-pack.json");
@@ -357,7 +361,8 @@ async function installPack(instanceDir, gameVersion, { log, progress }) {
     return modsDir;
   }
 
-  log(`[paczka] Sprawdzanie modów dla ${splitTarget(gameVersion).version}${loaderFor(gameVersion) === "forge" ? " (Forge)" : ""}...`);
+  const loaderName = { forge: " (Forge)", neoforge: " (NeoForge)" }[loaderFor(gameVersion)] || "";
+  log(`[paczka] Sprawdzanie modów dla ${splitTarget(gameVersion).version}${loaderName}...`);
   let files;
   try {
     files = await resolve([...pack.libraries, ...pack.mods], gameVersion, log);
@@ -477,9 +482,9 @@ function describe(file) {
         const raw = JSON.parse(zip.readAsText("mcmod.info"));
         const meta = (Array.isArray(raw) ? raw : raw.modList || [])[0];
         if (meta) info = { title: meta.name || meta.modid, version: meta.version, modId: meta.modid };
-      } else if (zip.getEntry("META-INF/mods.toml")) {
-        // nowy Forge: pierwszy [[mods]] z mods.toml; wersja bywa „${file.jarVersion}” — wtedy z MANIFEST.MF
-        const toml = zip.readAsText("META-INF/mods.toml");
+      } else if (zip.getEntry("META-INF/mods.toml") || zip.getEntry("META-INF/neoforge.mods.toml")) {
+        // nowy Forge i NeoForge: pierwszy [[mods]] z mods.toml; wersja bywa „${file.jarVersion}” — wtedy z MANIFEST.MF
+        const toml = zip.readAsText(zip.getEntry("META-INF/neoforge.mods.toml") ? "META-INF/neoforge.mods.toml" : "META-INF/mods.toml");
         const block = toml.split(/^\s*\[\[mods\]\]\s*$/m)[1] || "";
         const field = name => (new RegExp(`^\\s*${name}\\s*=\\s*["']([^"']*)["']`, "m").exec(block) || [])[1];
         let version = field("version");

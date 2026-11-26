@@ -1,5 +1,5 @@
 // Gotowe modpacki z Modrinth (.mrpack): wyszukiwanie, instalacja do osobnego folderu, usuwanie.
-// Obsługiwane są modpacki na Fabric i Forge (od 1.13); z pliku także .zip z CurseForge.
+// Obsługiwane są modpacki na Fabric, Forge (od 1.13) i NeoForge (od 1.20.2); z pliku także .zip z CurseForge.
 
 const fs = require("fs");
 const path = require("path");
@@ -43,7 +43,7 @@ function readModpack(gameDir, slug) {
 }
 
 async function searchModpacks(gameDir, query) {
-  const facets = JSON.stringify([["project_type:modpack"], ["categories:fabric", "categories:forge"]]);
+  const facets = JSON.stringify([["project_type:modpack"], ["categories:fabric", "categories:forge", "categories:neoforge"]]);
   const index = query ? "relevance" : "downloads";
   const data = await getJson(`${API}/search?limit=30&index=${index}&query=${encodeURIComponent(query)}&facets=${encodeURIComponent(facets)}`);
   const installed = new Set(listModpacks(gameDir).map(m => m.id));
@@ -107,8 +107,15 @@ function checkLoader(gameVersion, loader, loaderVersion) {
     }
     return { loader, forgeVersion: loaderVersion };
   }
-  const names = { neoforge: "NeoForge", quilt: "Quilt" };
-  throw new Error(`Ten modpack wymaga ${names[loader] || loader} — launcher obsługuje Fabric i Forge`);
+  // NeoForge dla 1.20.1 to jeszcze odmiana Forge (inny instalator) — obsługujemy od 1.20.2
+  if (loader === "neoforge") {
+    if (!versionAtLeast(gameVersion, "1.20.2")) {
+      throw new Error(`Modpacki na NeoForge działają od Minecrafta 1.20.2 — ten jest na ${gameVersion}`);
+    }
+    return { loader, forgeVersion: loaderVersion };
+  }
+  const names = { quilt: "Quilt" };
+  throw new Error(`Ten modpack wymaga ${names[loader] || loader} — launcher obsługuje Fabric, Forge i NeoForge`);
 }
 
 // Zawartość archiwum .mrpack; launcher obsługuje modpacki na Fabric i Forge
@@ -121,8 +128,8 @@ function readIndex(zip) {
   }
   const deps = index.dependencies || {};
   if (!deps.minecraft) throw new Error("Modpack nie podaje wersji Minecrafta");
-  const loader = deps["fabric-loader"] ? "fabric" : deps.forge ? "forge" : Object.keys(deps).find(k => k !== "minecraft") || "inny loader";
-  index.loaderInfo = checkLoader(deps.minecraft, loader.replace(/-loader$/, ""), deps["fabric-loader"] || deps.forge);
+  const loader = deps["fabric-loader"] ? "fabric" : deps.forge ? "forge" : deps.neoforge ? "neoforge" : Object.keys(deps).find(k => k !== "minecraft") || "inny loader";
+  index.loaderInfo = checkLoader(deps.minecraft, loader.replace(/-loader$/, ""), deps["fabric-loader"] || deps.forge || deps.neoforge);
   return index;
 }
 
@@ -159,7 +166,7 @@ function copyOverrides(zip, dir, prefixes) {
 
 function saveInfo(dir, info, count, log) {
   fs.writeFileSync(path.join(dir, INFO), JSON.stringify(info, null, 2));
-  const loader = info.loader === "forge" ? "Forge" : "Fabric";
+  const loader = { forge: "Forge", neoforge: "NeoForge" }[info.loader] || "Fabric";
   log(`[modpack] Zainstalowano ${info.title} (Minecraft ${info.gameVersion}, ${loader}, ${count} plików)`);
   return info;
 }
@@ -186,7 +193,7 @@ function readCurseManifest(zip) {
   if (!primary || !primary.id) throw new Error("Modpack nie podaje loadera modów");
   const [, loader, loaderVersion] = /^([a-z]+)-(.+)$/.exec(primary.id) || [null, primary.id, ""];
   // CurseForge podaje Forge jako „forge-47.2.0”, czasem z wersją gry z przodu („forge-1.20.1-47.2.0”)
-  const version = loader === "forge" ? loaderVersion.replace(new RegExp(`^${gameVersion.replace(/\./g, "\\.")}-`), "") : loaderVersion;
+  const version = loader === "forge" || loader === "neoforge" ? loaderVersion.replace(new RegExp(`^${gameVersion.replace(/\./g, "\\.")}-`), "") : loaderVersion;
   manifest.loaderInfo = checkLoader(gameVersion, loader, version);
   return manifest;
 }
@@ -254,9 +261,9 @@ async function importCurse(gameDir, zip, manifest, fallbackTitle, { log, progres
 // Instaluje najnowszą wersję modpacka na Fabric albo Forge. progress({ task, total }), log(tekst)
 async function installModpack(gameDir, projectId, options) {
   const project = await getJson(`${API}/project/${projectId}`);
-  const versions = await getJson(`${API}/project/${projectId}/version?loaders=${encodeURIComponent('["fabric","forge"]')}`);
+  const versions = await getJson(`${API}/project/${projectId}/version?loaders=${encodeURIComponent('["fabric","forge","neoforge"]')}`);
   const version = versions.find(v => v.version_type === "release") || versions[0];
-  if (!version) throw new Error("Ten modpack nie ma wersji na Fabric ani Forge");
+  if (!version) throw new Error("Ten modpack nie ma wersji na Fabric, Forge ani NeoForge");
   const packFile = version.files.find(f => f.primary) || version.files[0];
 
   options.log(`[modpack] Pobieranie ${project.title} ${version.version_number}...`);

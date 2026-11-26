@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld("api", {
   fabricVersions: () => ipcRenderer.invoke("fabric:versions"),
   forgeVersions: () => ipcRenderer.invoke("forge:versions"),
   forgeModern: () => ipcRenderer.invoke("forge:modern"),
+  neoforgeVersions: () => ipcRenderer.invoke("neoforge:versions"),
   // ekran Home
   getSkin: opts => ipcRenderer.invoke("skin:get", opts),
   getNews: () => ipcRenderer.invoke("news:get"),

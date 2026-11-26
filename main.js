@@ -282,8 +282,8 @@ function installedVersions() {
   if (!fs.existsSync(dir)) return [];
   // "1.21.11" = paczka Fabric (albo stary Forge), "forge:1.20.1" = paczka na nowym Forge
   return fs.readdirSync(dir)
-    .filter(n => /^(pack|forge)-/.test(n) && fs.existsSync(path.join(dir, n, ".xbobersonx-pack.json")))
-    .map(n => n.startsWith("pack-") ? n.slice("pack-".length) : `forge:${n.slice("forge-".length)}`);
+    .filter(n => /^(pack|forge|neoforge)-/.test(n) && fs.existsSync(path.join(dir, n, ".xbobersonx-pack.json")))
+    .map(n => n.startsWith("pack-") ? n.slice("pack-".length) : n.replace(/^(forge|neoforge)-/, "$1:"));
 }
 
 ipcMain.handle("versions:list", async () => {
@@ -394,15 +394,78 @@ ipcMain.handle("forge:modern", async () => {
   try { return Object.keys(await modernForgeBuilds()); } catch { return []; }
 });
 
+// ---------- NeoForge ----------
+// Instaluje się tym samym sposobem co Forge (ten sam instalator, opcja --installClient), profil to neoforge-<build>.
+// Numer NeoForge zawiera wersję gry: 21.1.268 = Minecraft 1.21.1, 21.0.x = 1.21, 26.1.2.130 = 26.1.2.
+const NEOFORGE_MAVEN = "https://maven.neoforged.net/releases/";
+const NEOFORGE_META = `${NEOFORGE_MAVEN}net/neoforged/neoforge/maven-metadata.xml`;
+
+function neoforgeGameVersion(build) {
+  const parts = build.split("-")[0].split(".");
+  if (parts.some(x => !/^\d+$/.test(x))) return null;
+  const [a, b, c] = parts;
+  if (Number(a) >= 26) return parts.length >= 4 ? `${a}.${b}${c !== "0" ? `.${c}` : ""}` : null;
+  return parts.length === 3 ? `1.${a}${b !== "0" ? `.${b}` : ""}` : null;
+}
+
+// { "1.21.1": "21.1.268", ... } — najnowszy stabilny build (bez -beta) każdej wersji gry
+async function neoforgeBuilds() {
+  const cache = path.join(GAME_DIR, "cache", "launcher", "neoforge_versions.json");
+  let versions;
+  try {
+    const res = await fetch(NEOFORGE_META);
+    if (!res.ok) throw new Error(`${res.status}`);
+    versions = [...(await res.text()).matchAll(/<version>([^<]+)<\/version>/g)].map(m => m[1]);
+    fs.mkdirSync(path.dirname(cache), { recursive: true });
+    fs.writeFileSync(cache, JSON.stringify(versions));
+  } catch (err) {
+    if (!fs.existsSync(cache)) throw err;
+    versions = JSON.parse(fs.readFileSync(cache, "utf8"));
+  }
+  const from = (require("./modpack.json").neoforgeModern || {}).from || "1.20.2";
+  const builds = {};
+  for (const build of versions) {
+    if (build.includes("-")) continue; // -beta i inne niestabilne
+    const mc = neoforgeGameVersion(build);
+    if (!mc || !versionAtLeast(mc, from)) continue;
+    if (!builds[mc] || build.localeCompare(builds[mc], undefined, { numeric: true }) > 0) builds[mc] = build;
+  }
+  return builds;
+}
+
+ipcMain.handle("neoforge:versions", async () => {
+  try { return Object.keys(await neoforgeBuilds()); } catch { return []; }
+});
+
+// Forge i NeoForge różnią się tylko adresem instalatora i nazwą profilu
+const FORGE_KINDS = {
+  forge: {
+    label: "Forge",
+    builds: () => modernForgeBuilds(),
+    id: (mc, build) => `${mc}-forge-${build}`,
+    file: (mc, build) => `forge-${mc}-${build}-installer.jar`,
+    url: (mc, build) => `${FORGE_MAVEN}net/minecraftforge/forge/${mc}-${build}/forge-${mc}-${build}-installer.jar`,
+    saved: (mc, name) => name.startsWith(`${mc}-forge-`),
+  },
+  neoforge: {
+    label: "NeoForge",
+    builds: () => neoforgeBuilds(),
+    id: (mc, build) => `neoforge-${build}`,
+    file: (mc, build) => `neoforge-${build}-installer.jar`,
+    url: (mc, build) => `${NEOFORGE_MAVEN}net/neoforged/neoforge/${build}/neoforge-${build}-installer.jar`,
+    saved: (mc, name) => name.startsWith("neoforge-") && neoforgeGameVersion(name.slice("neoforge-".length)) === mc,
+  },
+};
+
 // Znacznik zapisywany dopiero po udanej instalacji: instalator tworzy profil przed przerobieniem plików gry,
 // więc sam profil po przerwanej instalacji (zamknięty launcher) nie znaczy, że Forge działa
 const FORGE_DONE = ".bobrmc-installed";
 
-function savedForgeProfile(gameVersion) {
+function savedForgeProfile(kind, gameVersion) {
   const dir = path.join(GAME_DIR, "versions");
   if (!fs.existsSync(dir)) return null;
   const saved = fs.readdirSync(dir)
-    .filter(n => n.startsWith(`${gameVersion}-forge-`) && fs.existsSync(path.join(dir, n, FORGE_DONE)))
+    .filter(n => FORGE_KINDS[kind].saved(gameVersion, n) && fs.existsSync(path.join(dir, n, FORGE_DONE)))
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   return saved.length ? saved[saved.length - 1] : null;
 }
@@ -464,37 +527,38 @@ function dropBrokenLibraries(installer) {
   }
 }
 
-// wantedBuild: konkretna wersja Forge (modpacki jej wymagają); bez niej — zalecana z promotions
-async function installModernForge(gameVersion, javaPath, wantedBuild) {
+// kind: "forge" albo "neoforge"; wantedBuild: konkretna wersja (modpacki jej wymagają), bez niej — zalecana
+async function installForgeLoader(kind, gameVersion, javaPath, wantedBuild) {
+  const k = FORGE_KINDS[kind];
   let build = wantedBuild;
   if (!build) {
     try {
-      build = (await modernForgeBuilds())[gameVersion];
+      build = (await k.builds())[gameVersion];
     } catch {}
   }
   if (!build) {
-    const saved = savedForgeProfile(gameVersion);
+    const saved = savedForgeProfile(kind, gameVersion);
     if (saved) return saved;
-    throw new Error(`Forge nie jest dostępny dla wersji ${gameVersion} (albo brak internetu)`);
+    throw new Error(`${k.label} nie jest dostępny dla wersji ${gameVersion} (albo brak internetu)`);
   }
-  const id = `${gameVersion}-forge-${build}`;
+  const id = k.id(gameVersion, build);
   if (fs.existsSync(path.join(GAME_DIR, "versions", id, FORGE_DONE))) return id;
 
-  const full = `${gameVersion}-${build}`;
-  const installer = path.join(GAME_DIR, "cache", "forge", `forge-${full}-installer.jar`);
+  const full = `${k.label} ${kind === "forge" ? `${gameVersion}-${build}` : build}`;
+  const installer = path.join(GAME_DIR, "cache", kind, k.file(gameVersion, build));
   if (!fs.existsSync(installer)) {
-    send("game:log", `Pobieranie instalatora Forge ${full}...`);
+    send("game:log", `Pobieranie instalatora ${full}...`);
     let res;
     try {
-      res = await fetch(`${FORGE_MAVEN}net/minecraftforge/forge/${full}/forge-${full}-installer.jar`);
+      res = await fetch(k.url(gameVersion, build));
     } catch {
-      throw new Error("Brak internetu — Forge trzeba raz zainstalować z internetem");
+      throw new Error(`Brak internetu — ${k.label} trzeba raz zainstalować z internetem`);
     }
-    if (!res.ok) throw new Error(`Nie udało się pobrać instalatora Forge ${full} (${res.status})`);
+    if (!res.ok) throw new Error(`Nie udało się pobrać instalatora ${full} (${res.status})`);
     const data = Buffer.from(await res.arrayBuffer());
     let valid = false;
     try { valid = !!new AdmZip(data).getEntry("install_profile.json"); } catch {}
-    if (!valid) throw new Error("Uszkodzony instalator Forge — spróbuj ponownie");
+    if (!valid) throw new Error(`Uszkodzony instalator ${k.label} — spróbuj ponownie`);
     fs.mkdirSync(path.dirname(installer), { recursive: true });
     fs.writeFileSync(installer, data);
   }
@@ -507,7 +571,7 @@ async function installModernForge(gameVersion, javaPath, wantedBuild) {
   const profiles = path.join(GAME_DIR, "launcher_profiles.json");
   if (!fs.existsSync(profiles)) fs.writeFileSync(profiles, JSON.stringify({ profiles: {} }, null, 2));
 
-  send("game:log", `Instalowanie Forge ${full} (pierwszy raz trwa 1–3 minuty)...`);
+  send("game:log", `Instalowanie ${full} (pierwszy raz trwa 1–3 minuty)...`);
   // java.exe zamiast javaw.exe — instalator pisze postęp na konsolę
   const java = /javaw\.exe$/i.test(javaPath) ? javaPath.replace(/javaw\.exe$/i, "java.exe") : javaPath;
   const { spawn } = require("child_process");
@@ -519,7 +583,7 @@ async function installModernForge(gameVersion, javaPath, wantedBuild) {
         if (!line.trim()) continue;
         tail.push(line);
         if (tail.length > 30) tail.shift();
-        send("game:log", `[forge] ${line}`);
+        send("game:log", `[${kind}] ${line}`);
       }
     };
     proc.stdout.on("data", onData);
@@ -528,10 +592,10 @@ async function installModernForge(gameVersion, javaPath, wantedBuild) {
     proc.on("close", resolve);
   });
   if (code !== 0 || !fs.existsSync(path.join(GAME_DIR, "versions", id, `${id}.json`))) {
-    throw new Error(`Instalacja Forge ${full} nie powiodła się (kod ${code}). ${tail.slice(-3).join(" ")}`);
+    throw new Error(`Instalacja ${full} nie powiodła się (kod ${code}). ${tail.slice(-3).join(" ")}`);
   }
   fs.writeFileSync(path.join(GAME_DIR, "versions", id, FORGE_DONE), new Date().toISOString());
-  send("game:log", `Forge ${full} zainstalowany`);
+  send("game:log", `${full} zainstalowany`);
   return id;
 }
 
@@ -574,19 +638,21 @@ function forgeDir(version) {
   return path.join(GAME_DIR, "instances", `forge-${version}`);
 }
 
-// Folder gry dla wpisu z listy wersji: paczka xBobersonx ("pack"), paczka na Forge ("forge")
-// albo modpack ("mp:<slug>")
+// Folder gry dla wpisu z listy wersji: paczka xBobersonx ("pack"), paczka na Forge ("forge") albo NeoForge
+// ("neoforge"), albo modpack ("mp:<slug>")
 function instanceDir(version, instance) {
   if (instance && instance.startsWith("mp:")) return mrpack.modpackDir(GAME_DIR, instance.slice(3));
+  if (instance === "neoforge") return path.join(GAME_DIR, "instances", `neoforge-${version}`);
   return instance === "forge" ? forgeDir(version) : packDir(version);
 }
 
 // Dla modpack.js: wersja gry, a dla nowego Forge "forge:<wersja>" (inny loader na Modrinth i inny folder modów)
 function modTarget(version, instance) {
-  if (instance === "forge") return `forge:${version}`;
+  if (instance === "forge" || instance === "neoforge") return `${instance}:${version}`;
   if (instance && instance.startsWith("mp:")) {
     try {
-      if (mrpack.readModpack(GAME_DIR, instance.slice(3)).loader === "forge") return `forge:${version}`;
+      const { loader } = mrpack.readModpack(GAME_DIR, instance.slice(3));
+      if (loader === "forge" || loader === "neoforge") return `${loader}:${version}`;
     } catch {}
   }
   return version;
@@ -1045,8 +1111,10 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   const gameDir = instanceDir(version, loader);
   // 1.8.9 (i inne wersje z sekcji „forge” w modpack.json) działa na starym Forge,
   // wpis „forge” (1.20+) na nowym Forge, reszta na Fabric
-  const modernForge = loader === "forge";
-  const modpackForge = !!modpack && modpack.loader === "forge"; // modpack z Modrinth/CurseForge na Forge
+  // paczka xBobersonx na Forge/NeoForge albo modpack z Modrinth/CurseForge na Forge/NeoForge
+  const modernForge = loader === "forge" || loader === "neoforge";
+  const modpackForge = !!modpack && (modpack.loader === "forge" || modpack.loader === "neoforge");
+  const forgeKind = modernForge ? loader : modpackForge ? modpack.loader : null;
   const forge = !modpack && !modernForge && forgePack(version);
   const target = modTarget(version, loader);
   const javaPath = await getJava(version, {
@@ -1063,9 +1131,9 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
     forgeJar = await installForge(forge.build);
     send("game:log", `Forge: ${forge.build}`);
   } else if (modernForge || modpackForge) {
-    gameVersion.custom = await installModernForge(version, javaPath, modpackForge ? modpack.forgeVersion : null);
+    gameVersion.custom = await installForgeLoader(forgeKind, version, javaPath, modpackForge ? modpack.forgeVersion : null);
     forgeArgs.push(...forgeJvmArgs(gameVersion.custom));
-    send("game:log", `Forge: ${gameVersion.custom}`);
+    send("game:log", `${FORGE_KINDS[forgeKind].label}: ${gameVersion.custom}`);
   } else {
     send("game:log", "Instalowanie Fabric...");
     gameVersion.custom = await installFabric(version, modpack && modpack.fabricLoader);
@@ -1088,7 +1156,7 @@ async function launchGame({ nick, version, ram, loader, window: gameWindow, afte
   // lista serwerów, a w paczce xBobersonx też ustawienia modów, paczki tekstur i shadery
   const shareOptions = syncOptions;
   // ustawienia modów są wspólne tylko w obrębie jednego loadera (stary Forge, nowy Forge, Fabric)
-  const shareScope = { loader: forge ? "forge" : modernForge || modpackForge ? "forge-modern" : "fabric", full: loader === "pack" || modernForge };
+  const shareScope = { loader: forge ? "forge" : forgeKind === "neoforge" ? "neoforge" : forgeKind ? "forge-modern" : "fabric", full: loader === "pack" || modernForge };
   if (shareOptions) {
     const seededFrom = gameOptions.seed(GAME_DIR, SHARED_OPTIONS);
     if (seededFrom) send("game:log", `[ustawienia] Wspólne ustawienia utworzone z ${seededFrom}`);

@@ -118,6 +118,40 @@
       "shulkerboxtooltip"
     ]
   },
+  "neoforgeModern": {
+    "from": "1.20.2",
+    "name": "xBobersonx Mods",
+    "libraries": [],
+    "mods": [
+      "sodium",
+      "sodium-extra",
+      "iris",
+      "lithium",
+      "ferrite-core",
+      "modernfix",
+      "entityculling",
+      "immediatelyfast",
+      "dynamic-fps",
+      "moreculling",
+      "badoptimizations",
+      "clumps",
+      "jei",
+      "appleskin",
+      "mouse-tweaks",
+      "jade",
+      "controlling",
+      "searchables",
+      "3dskinlayers",
+      "not-enough-animations",
+      "smooth-swapping",
+      "betterf3",
+      "simple-voice-chat",
+      "e4mc",
+      "no-chat-reports",
+      "shulkerboxtooltip",
+      "notenoughcrashes"
+    ]
+  },
   "bundled": [
     { "project": "bobrconfig", "file": "bundled/bobr-config-0.3.0-1.21.11.jar", "versions": ["1.21.11"] },
     { "project": "bobrconfig", "file": "bundled/bobr-config-0.3.0-1.8.9.jar", "versions": ["1.8.9"] }

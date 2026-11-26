@@ -36,13 +36,14 @@ function persist() {
 // i wersje na Forge z własną paczką (forgeVersions: { "1.8.9": "xBobersonx PvP" }).
 // Wersje z forgeModern (1.20+) mają dodatkowo wpis z paczką na nowym Forge.
 // onlyInstalled: bez internetu pokazujemy tylko wersje, które już są pobrane
-function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpacks = [], forgeVersions = {}, forgeModern = new Set()) {
+function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpacks = [], forgeVersions = {}, forgeModern = new Set(), neoforge = new Set()) {
   const select = $("version");
   select.innerHTML = "";
   for (const mp of modpacks) {
     const opt = document.createElement("option");
     opt.value = `${mp.gameVersion}|mp:${mp.slug}`;
-    opt.textContent = `📦 ${mp.title} (${mp.gameVersion}${mp.loader === "forge" ? ", Forge" : ""})`;
+    const mpLoader = { forge: ", Forge", neoforge: ", NeoForge" }[mp.loader] || "";
+    opt.textContent = `📦 ${mp.title} (${mp.gameVersion}${mpLoader})`;
     select.appendChild(opt);
   }
   for (const v of versions) {
@@ -58,6 +59,12 @@ function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpack
       const opt = document.createElement("option");
       opt.value = `${v.id}|forge`;
       opt.textContent = `Minecraft ${v.id} – ${packName} (Forge)`;
+      select.appendChild(opt);
+    }
+    if (neoforge.has(v.id) && !(onlyInstalled && !onlyInstalled.includes(`neoforge:${v.id}`))) {
+      const opt = document.createElement("option");
+      opt.value = `${v.id}|neoforge`;
+      opt.textContent = `Minecraft ${v.id} – ${packName} (NeoForge)`;
       select.appendChild(opt);
     }
   }
@@ -310,14 +317,15 @@ async function init() {
 // Lista wersji (też po instalacji/usunięciu modpacka); select = wpis do zaznaczenia
 async function loadVersions(select) {
   try {
-    const [{ versions, offline, installed, modpacks }, fabric, packName, forge, forgeModern] = await Promise.all([
+    const [{ versions, offline, installed, modpacks }, fabric, packName, forge, forgeModern, neoforge] = await Promise.all([
       window.api.listVersions(),
       window.api.fabricVersions().catch(() => []),
       window.api.packName(),
       window.api.forgeVersions().catch(() => ({})),
       window.api.forgeModern().catch(() => []),
+      window.api.neoforgeVersions().catch(() => []),
     ]);
-    fillVersions(versions, new Set(fabric), packName, offline ? installed : null, modpacks, forge, new Set(forgeModern));
+    fillVersions(versions, new Set(fabric), packName, offline ? installed : null, modpacks, forge, new Set(forgeModern), new Set(neoforge));
     if (!$("btn-play").disabled) $("play-label").textContent = playLabel();
     homeRefresh("version");
     if (select) {
@@ -1107,7 +1115,8 @@ function modpackRow(mp) {
   title.textContent = mp.title;
   const meta = document.createElement("div");
   meta.className = "result-meta";
-  meta.textContent = `Minecraft ${mp.gameVersion} · ${mp.loader === "forge" ? "Forge" : "Fabric"}${mp.version ? ` · wersja ${mp.version}` : ""}`;
+  const loaderName = { forge: "Forge", neoforge: "NeoForge" }[mp.loader] || "Fabric";
+  meta.textContent = `Minecraft ${mp.gameVersion} · ${loaderName}${mp.version ? ` · wersja ${mp.version}` : ""}`;
   body.append(title, meta);
 
   const buttons = document.createElement("div");
