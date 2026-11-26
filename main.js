@@ -7,9 +7,10 @@ const { Auth } = require("msmc");
 const { autoUpdater } = require("electron-updater");
 const AdmZip = require("adm-zip");
 const {
-  installPack, removePack, packName, forgePack, packFor, packModsDir, listMods, setModEnabled, searchMods, installOwnMod, checkOwnUpdates, updateOwnMod,
+  installPack, removePack, packName, forgePack, packFor, packModsDir, listMods, setModEnabled, searchMods, installOwnMod, checkOwnUpdates, updateOwnMod, readPackList,
 } = require("./modpack");
 const mrpack = require("./mrpack");
+const backups = require("./backups");
 const { getJava, JVM_FLAGS } = require("./java");
 const content = require("./content");
 const { analyze, findCrashReport, stackSuspects } = require("./crash");
@@ -732,7 +733,15 @@ ipcMain.handle("profiles:create", async (_e, options) => {
 ipcMain.handle("profiles:update", async (_e, { slug, ...options }) => {
   if (gameRunning) throw new Error("Zamknij grę, zanim zmienisz profil");
   await checkProfileLoader(options.gameVersion, options.loader);
-  const oldTarget = modTarget(mrpack.readModpack(GAME_DIR, slug).gameVersion, `mp:${slug}`);
+  const current = mrpack.readModpack(GAME_DIR, slug);
+  const oldTarget = modTarget(current.gameVersion, `mp:${slug}`);
+  // świat otwarty na innej wersji gra przerabia na stałe — wcześniej robimy kopię wszystkich światów
+  if (String(options.gameVersion) !== current.gameVersion || options.loader !== current.loader) {
+    const names = { fabric: "Fabric", forge: "Forge", neoforge: "NeoForge", vanilla: "bez modów" };
+    const reason = `przed zmianą na ${options.gameVersion} ${names[options.loader] || options.loader}`;
+    const made = await backups.backupAll(mrpack.modpackDir(GAME_DIR, slug), reason);
+    if (made.length) logToConsole(`[kopie] Zapisano ${made.length} światów (${reason})`);
+  }
   const { before, after } = mrpack.updateProfile(GAME_DIR, slug, options);
   // mody paczki pasują tylko do jednej wersji i loadera — po zmianie albo wyłączeniu paczki usuwamy stare
   const moved = before.gameVersion !== after.gameVersion || before.loader !== after.loader;
@@ -747,6 +756,137 @@ ipcMain.handle("profiles:duplicate", async (_e, { slug }) => {
   if (gameRunning) throw new Error("Zamknij grę, zanim skopiujesz profil");
   return mrpack.duplicateProfile(GAME_DIR, slug, { log: logToConsole });
 });
+
+// Wersja loadera do pliku .mrpack (inne launchery jej potrzebują); null, gdy nie da się jej ustalić
+async function profileLoaderVersion(info) {
+  const mc = info.gameVersion;
+  try {
+    if (info.loader === "fabric") {
+      const dir = path.join(GAME_DIR, "versions");
+      const saved = fs.existsSync(dir)
+        ? fs.readdirSync(dir).filter(n => n.startsWith("fabric-loader-") && n.endsWith(`-${mc}`))
+            .map(n => n.slice("fabric-loader-".length, -(mc.length + 1)))
+            .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+        : [];
+      if (saved.length) return saved[saved.length - 1];
+      const loaders = await (await fetch(`${FABRIC_META}/${mc}`)).json();
+      return (loaders.find(l => l.loader.stable) || loaders[0]).loader.version;
+    }
+    if (info.loader === "forge" && forgePack(mc)) return forgePack(mc).build.split("-")[1];
+    if (info.loader === "forge" || info.loader === "neoforge") {
+      const saved = savedForgeProfile(info.loader, mc);
+      if (saved) return info.loader === "forge" ? saved.slice(`${mc}-forge-`.length) : saved.slice("neoforge-".length);
+      return (await FORGE_KINDS[info.loader].builds())[mc] || null;
+    }
+  } catch {}
+  return null;
+}
+
+ipcMain.handle("profiles:export", async (_e, { slug }) => {
+  const info = mrpack.readModpack(GAME_DIR, slug);
+  const dir = mrpack.modpackDir(GAME_DIR, slug);
+  const worlds = backups.listWorlds(dir);
+  const { response, checkboxChecked } = await dialog.showMessageBox(win, {
+    type: "question",
+    title: t("Eksportuj profil"),
+    message: t(`Eksportować profil ${info.title} do pliku .mrpack?`),
+    detail: t("Plik możesz wysłać znajomemu — zaimportuje go w BobrMC przyciskiem „Importuj z pliku…” (działa też w Modrinth App i Prism). Mody z Modrinth pobiorą się u niego same, mody paczki xBobersonx zainstaluje launcher."),
+    checkboxLabel: worlds.length ? t(`Dołącz światy (${worlds.length})`) : undefined,
+    checkboxChecked: false,
+    buttons: [t("Dalej"), t("Anuluj")],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response !== 0) return null;
+  const safeName = info.title.replace(/[<>:"/\\|?*\x00-\x1f]+/g, "_").trim() || "profil";
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: t("Zapisz profil"),
+    defaultPath: path.join(app.getPath("downloads"), `${safeName}.mrpack`),
+    filters: [{ name: "Modpack Modrinth (.mrpack)", extensions: ["mrpack"] }],
+  });
+  if (canceled || !filePath) return null;
+  const target = modTarget(info.gameVersion, `mp:${slug}`);
+  const packDir = info.pack ? packModsDir(dir, target) : null;
+  const result = await mrpack.exportProfile(GAME_DIR, slug, filePath, {
+    withWorlds: !!checkboxChecked && worlds.length > 0,
+    loaderVersion: await profileLoaderVersion(info),
+    packDir: packDir && packDir !== path.join(dir, "mods") ? packDir : null,
+    packNames: new Set(info.pack ? readPackList(dir).map(f => f.name) : []),
+    log: logToConsole,
+  });
+  shell.showItemInFolder(filePath);
+  return result;
+});
+
+// Kopie zapasowe światów profilu albo modpacka
+ipcMain.handle("backups:list", (_e, { slug }) => {
+  const dir = mrpack.modpackDir(GAME_DIR, slug);
+  return { worlds: backups.listWorlds(dir), backups: backups.listBackups(dir) };
+});
+ipcMain.handle("backups:create", async (_e, { slug, world }) => {
+  const made = await backups.createBackup(mrpack.modpackDir(GAME_DIR, slug), world);
+  logToConsole(`[kopie] Zapisano kopię świata ${world}`);
+  return made;
+});
+ipcMain.handle("backups:restore", async (_e, { slug, file }) => {
+  if (gameRunning) throw new Error("Zamknij grę, zanim przywrócisz świat");
+  const dir = mrpack.modpackDir(GAME_DIR, slug);
+  const backup = backups.listBackups(dir).find(b => b.file === file);
+  if (!backup) throw new Error("Nie ma takiej kopii");
+  const date = new Date(backup.created).toLocaleString("pl-PL");
+  const { response } = await dialog.showMessageBox(win, {
+    type: "question",
+    title: t("Przywróć świat"),
+    message: t(`Przywrócić świat ${backup.world} z ${date}?`),
+    detail: t("Obecny stan tego świata launcher najpierw zapisze jako kopię, więc niczego nie stracisz."),
+    buttons: [t("Przywróć"), t("Anuluj")],
+    defaultId: 0,
+    cancelId: 1,
+  });
+  if (response !== 0) return null;
+  const result = await backups.restoreBackup(dir, file);
+  logToConsole(`[kopie] Przywrócono świat ${result.world} z ${date}`);
+  return result;
+});
+ipcMain.handle("backups:delete", async (_e, { slug, file }) => {
+  const dir = mrpack.modpackDir(GAME_DIR, slug);
+  const backup = backups.listBackups(dir).find(b => b.file === file);
+  if (!backup) return false;
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    title: t("Usuń kopię"),
+    message: t(`Usunąć kopię świata ${backup.world} z ${new Date(backup.created).toLocaleString("pl-PL")}?`),
+    detail: t("Tego nie da się cofnąć."),
+    buttons: [t("Usuń"), t("Anuluj")],
+    defaultId: 1,
+    cancelId: 1,
+  });
+  if (response !== 0) return false;
+  backups.deleteBackup(dir, file);
+  return true;
+});
+ipcMain.handle("backups:folder", (_e, { slug }) => {
+  const dir = backups.backupsDir(mrpack.modpackDir(GAME_DIR, slug));
+  fs.mkdirSync(dir, { recursive: true });
+  return shell.openPath(dir);
+});
+
+// Menu „⋯” przy profilu/modpacku; zwraca wybraną akcję albo null
+ipcMain.handle("modpacks:menu", (_e, { profile }) => new Promise(resolve => {
+  let picked = false;
+  const pick = action => () => { picked = true; resolve(action); };
+  const items = [
+    ...(profile ? [
+      { label: t("Duplikuj"), click: pick("duplicate") },
+      { label: t("Eksportuj do .mrpack…"), click: pick("export") },
+    ] : []),
+    { label: t("Kopie zapasowe światów…"), click: pick("backups") },
+    { type: "separator" },
+    { label: t("Usuń"), click: pick("delete") },
+  ];
+  // na Windows callback zamknięcia menu przychodzi przed kliknięciem — czekamy chwilę na wybór
+  Menu.buildFromTemplate(items).popup({ window: win, callback: () => setTimeout(() => { if (!picked) resolve(null); }, 100) });
+}));
 
 ipcMain.handle("modpacks:delete", async (_e, { slug, title }) => {
   if (gameRunning) throw new Error("Zamknij grę, zanim usuniesz modpack");

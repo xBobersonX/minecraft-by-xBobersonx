@@ -1162,34 +1162,160 @@ function modpackRow(mp) {
       $("modpacks-hint").textContent = cleanError(err);
     }
   };
+  const duplicate = async () => {
+    $("modpacks-hint").textContent = `Kopiowanie ${mp.title}…`;
+    const info = await window.api.duplicateProfile({ slug: mp.slug });
+    await loadVersions();
+    await loadModpacks();
+    $("modpacks-hint").textContent = `Utworzono kopię: ${info.title}`;
+  };
+  const exportProfile = async () => {
+    $("modpacks-hint").textContent = `Eksportowanie ${mp.title}…`;
+    const result = await window.api.exportProfile({ slug: mp.slug });
+    $("modpacks-hint").textContent = result
+      ? `Zapisano ${result.title}${result.worlds ? " ze światami" : ""} — plik możesz wysłać znajomemu (${result.downloads} plików pobierze się z Modrinth, ${result.overrides} jest w środku)`
+      : "";
+  };
+  // rzadsze akcje w menu „⋯”, żeby wiersz się nie rozjeżdżał
+  const more = document.createElement("button");
+  more.className = "more";
+  more.textContent = "⋯";
+  more.title = "Więcej";
+  more.onclick = async () => {
+    const action = await window.api.modpackMenu({ profile: mp.kind === "profile" });
+    if (!action) return;
+    if (action === "backups") return openBackups(mp);
+    if (action === "delete") return del.onclick();
+    more.disabled = true;
+    try {
+      await (action === "duplicate" ? duplicate() : exportProfile());
+    } catch (err) {
+      $("modpacks-hint").textContent = cleanError(err);
+    } finally {
+      more.disabled = false;
+    }
+  };
   if (mp.kind === "profile") {
     const editBtn = document.createElement("button");
     editBtn.textContent = "Edytuj";
     editBtn.onclick = () => openProfileDialog(mp);
-    const copy = document.createElement("button");
-    copy.textContent = "Duplikuj";
-    copy.title = "Kopia profilu z modami, światami i ustawieniami";
-    copy.onclick = async () => {
-      copy.disabled = true;
-      $("modpacks-hint").textContent = `Kopiowanie ${mp.title}…`;
-      try {
-        const info = await window.api.duplicateProfile({ slug: mp.slug });
-        await loadVersions();
-        await loadModpacks();
-        $("modpacks-hint").textContent = `Utworzono kopię: ${info.title}`;
-      } catch (err) {
-        $("modpacks-hint").textContent = cleanError(err);
-      } finally {
-        copy.disabled = false;
-      }
-    };
-    buttons.append(play, editBtn, copy, del);
+    buttons.append(play, editBtn, more);
   } else {
-    buttons.append(play, del);
+    buttons.append(play, more);
   }
   li.append(icon, body, buttons);
   return li;
 }
+
+// ---------- Kopie zapasowe światów ----------
+let backupsOf = null; // profil albo modpack, którego kopie są otwarte
+
+function formatSize(bytes) {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+async function openBackups(mp) {
+  backupsOf = mp;
+  $("backups-title").textContent = `Kopie światów — ${mp.title}`;
+  $("backups-hint").textContent = "";
+  $("backups").hidden = false;
+  await loadBackups();
+}
+
+async function loadBackups() {
+  const mp = backupsOf;
+  const list = $("backups-list");
+  let data;
+  try {
+    data = await window.api.listBackups({ slug: mp.slug });
+  } catch (err) {
+    $("backups-hint").textContent = cleanError(err);
+    return;
+  }
+  if (mp !== backupsOf) return;
+  const select = $("backups-world");
+  const chosen = select.value;
+  select.innerHTML = "";
+  for (const w of data.worlds) {
+    const opt = document.createElement("option");
+    opt.value = w.name;
+    opt.textContent = `${w.name} (${formatSize(w.size)})`;
+    select.appendChild(opt);
+  }
+  if (data.worlds.some(w => w.name === chosen)) select.value = chosen;
+  select.disabled = $("btn-backup-create").disabled = data.worlds.length === 0;
+  if (!data.worlds.length) {
+    const opt = document.createElement("option");
+    opt.textContent = "Brak światów — zagraj, żeby jakiś utworzyć";
+    select.appendChild(opt);
+  }
+
+  list.innerHTML = "";
+  if (!data.backups.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "Nie ma jeszcze kopii. Launcher zrobi je sam przed zmianą wersji albo loadera profilu.";
+    list.appendChild(li);
+    return;
+  }
+  for (const b of data.backups) {
+    const li = document.createElement("li");
+    li.className = "result";
+    const body = document.createElement("div");
+    body.className = "result-body";
+    const title = document.createElement("div");
+    title.className = "result-title";
+    title.textContent = b.world;
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    meta.textContent = [new Date(b.created).toLocaleString("pl-PL"), formatSize(b.size), b.auto ? `automatyczna${b.reason ? `, ${b.reason}` : ""}` : "ręczna"].join(" · ");
+    body.append(title, meta);
+    const buttons = document.createElement("div");
+    buttons.className = "result-buttons";
+    const restore = document.createElement("button");
+    restore.className = "primary";
+    restore.textContent = "Przywróć";
+    restore.onclick = () => backupAction(restore, async () => {
+      const result = await window.api.restoreBackup({ slug: mp.slug, file: b.file });
+      return result && `Przywrócono świat ${result.world}${result.saved ? " — poprzedni stan jest zapisany jako kopia" : ""}`;
+    });
+    const del = document.createElement("button");
+    del.textContent = "Usuń";
+    del.onclick = () => backupAction(del, async () =>
+      (await window.api.deleteBackup({ slug: mp.slug, file: b.file })) && "Usunięto kopię");
+    buttons.append(restore, del);
+    li.append(body, buttons);
+    list.appendChild(li);
+  }
+}
+
+async function backupAction(button, run) {
+  button.disabled = true;
+  try {
+    const message = await run();
+    if (message) $("backups-hint").textContent = message;
+    await loadBackups();
+  } catch (err) {
+    $("backups-hint").textContent = cleanError(err);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$("btn-close-backups").onclick = () => { $("backups").hidden = true; backupsOf = null; };
+$("btn-backups-folder").onclick = () => backupsOf && window.api.openBackups({ slug: backupsOf.slug });
+$("backups-add").onsubmit = event => {
+  event.preventDefault();
+  const world = $("backups-world").value;
+  if (!backupsOf || !world) return;
+  $("backups-hint").textContent = `Zapisywanie kopii ${world}…`;
+  backupAction($("btn-backup-create"), async () => {
+    const made = await window.api.createBackup({ slug: backupsOf.slug, world });
+    return `Zapisano kopię ${made.world} (${formatSize(made.size)})`;
+  });
+};
 
 function renderModpacks() {
   const list = $("modpacks-list");

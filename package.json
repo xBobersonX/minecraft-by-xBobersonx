@@ -1,6 +1,6 @@
 {
   "name": "minecraft-by-xbobersonx",
-  "version": "1.21.0",
+  "version": "1.22.0",
   "description": "BobrMC — launcher Minecrafta by xBobersonx",
   "main": "main.js",
   "scripts": {
@@ -39,6 +39,7 @@
       "options.js",
       "shared.js",
       "mrpack.js",
+      "backups.js",
       "servers.js",
       "modpack.json",
       "default-options.txt",

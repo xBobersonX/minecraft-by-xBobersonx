@@ -311,6 +311,9 @@ async function importModpack(gameDir, file, options) {
     if (!manifest) throw new Error("To nie jest poprawny modpack (.mrpack z Modrinth albo .zip z CurseForge)");
     return importCurse(gameDir, zip, manifest, path.basename(file, path.extname(file)), options);
   }
+  // profil wyeksportowany z BobrMC wraca jako profil (także na czystym Minecrafcie i starym Forge)
+  const profile = readProfileMarker(zip);
+  if (profile) return importProfile(gameDir, zip, profile, options);
   const index = readIndex(zip);
   for (const f of clientFiles(index)) {
     f.downloads = allowedDownloads(f);
@@ -398,7 +401,7 @@ function duplicateProfile(gameDir, slug, { log } = {}) {
   const from = modpackDir(gameDir, slug), to = modpackDir(gameDir, newSlug);
   if (log) log(`[profil] Kopiowanie ${source.title}...`);
   // logi i zrzuty awarii nie są potrzebne w kopii
-  const skip = new Set(["logs", "crash-reports"].map(n => path.resolve(from, n).toLowerCase()));
+  const skip = new Set(["logs", "crash-reports", "backups"].map(n => path.resolve(from, n).toLowerCase()));
   // Node na Windows podaje ścieżki z przedrostkiem \\?\ — bez niego porównujemy z listą pomijanych
   const plain = src => path.resolve(String(src).replace(/^\\\\\?\\/, "")).toLowerCase();
   fs.cpSync(from, to, { recursive: true, filter: src => !skip.has(plain(src)) });
@@ -408,11 +411,170 @@ function duplicateProfile(gameDir, slug, { log } = {}) {
   return info;
 }
 
+// ---------- Eksport profilu do .mrpack ----------
+// Plik działa w innych launcherach (Modrinth App, Prism): mody i paczki z Modrinth trafiają do listy pobierania,
+// reszta (własne pliki, ustawienia, opcjonalnie światy) do overrides/. BobrMC czyta dodatkowo bobrmc-profile.json
+// i odtwarza z niego profil, a mody paczki xBobersonx instaluje sam od nowa.
+const PROFILE_MARKER = "bobrmc-profile.json";
+// nie eksportujemy: logów, zrzutów, kopii zapasowych i plików launchera (lista paczki, stan instalacji)
+const EXPORT_SKIP = new Set([
+  "logs", "crash-reports", "screenshots", "backups", "natives", ".fabric", ".mixin.out", "debug",
+  "libraries", "versions", "assets", "downloads", "launcher_profiles.json", "launcher_profiles_microsoft_store.json",
+  "usercache.json", "usernamecache.json", INFO, ".xbobersonx-pack.json", ".xbobersonx-pack-check.json",
+]);
+// w tych folderach pliki z Modrinth zamieniamy na link do pobrania (mniejszy plik eksportu)
+const LOOKUP_DIRS = { mods: /\.jar$/i, resourcepacks: /\.zip$/i, shaderpacks: /\.zip$/i };
+
+function walkFiles(root, rel = "", out = []) {
+  for (const entry of fs.readdirSync(path.join(root, rel), { withFileTypes: true })) {
+    const child = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) walkFiles(root, child, out);
+    else if (entry.isFile() && entry.name !== "session.lock") out.push(child);
+  }
+  return out;
+}
+
+// sha1 → plik wersji z Modrinth (jedno zapytanie dla wszystkich plików)
+async function lookupModrinth(hashes) {
+  if (!hashes.length) return {};
+  const res = await fetch(`${API}/version_files`, {
+    method: "POST",
+    headers: { ...HEADERS, "Content-Type": "application/json" },
+    body: JSON.stringify({ hashes, algorithm: "sha1" }),
+  });
+  if (!res.ok) throw new Error(`Modrinth: ${res.status}`);
+  const versions = await res.json();
+  const found = {};
+  for (const [hash, version] of Object.entries(versions || {})) {
+    const file = (version.files || []).find(f => f.hashes && f.hashes.sha1 === hash);
+    if (file && allowedDownloads({ downloads: [file.url] }).length) found[hash] = file;
+  }
+  return found;
+}
+
+// options: { withWorlds, loaderVersion, packDir (folder modów paczki poza mods/), packNames (mody paczki w mods/), log }
+async function exportProfile(gameDir, slug, file, { withWorlds, loaderVersion, packDir, packNames = new Set(), log = () => {} } = {}) {
+  const info = readProfile(gameDir, slug);
+  const dir = modpackDir(gameDir, slug);
+  const packRel = packDir && path.relative(dir, packDir).split(path.sep).join("/");
+  const local = []; // { rel: ścieżka w profilu, path: ścieżka w modpacku, pack }
+  for (const rel of walkFiles(dir)) {
+    const top = rel.split("/")[0];
+    if (EXPORT_SKIP.has(top) || (top === "saves" && !withWorlds)) continue;
+    if (/\.log(\.gz)?$/i.test(rel)) continue;
+    if (packRel && (rel + "/").startsWith(packRel + "/")) {
+      // mody paczki spoza mods/ (Fabric: mods/preinstalled, stary Forge: mods/<wersja>) — w modpacku leżą w mods/
+      if (/\.jar$/i.test(rel)) local.push({ rel, path: `mods/${path.posix.basename(rel)}`, pack: true });
+      continue;
+    }
+    const name = path.posix.basename(rel);
+    const pack = top === "mods" && packNames.has(name.replace(/\.disabled$/, ""));
+    if (pack && name.endsWith(".disabled")) continue; // wyłączenie modów paczki zapisuje .xbobersonx-disabled.json
+    local.push({ rel, path: rel, pack });
+  }
+
+  // pliki, które da się pobrać z Modrinth
+  const candidates = local.filter(f => {
+    const [top, name, extra] = f.path.split("/");
+    return LOOKUP_DIRS[top] && name && !extra && LOOKUP_DIRS[top].test(name);
+  });
+  for (const f of candidates) {
+    const data = fs.readFileSync(path.join(dir, f.rel));
+    f.sha1 = crypto.createHash("sha1").update(data).digest("hex");
+  }
+  let found = {};
+  try {
+    found = await lookupModrinth([...new Set(candidates.map(f => f.sha1))]);
+  } catch (err) {
+    log(`[eksport] Modrinth niedostępny (${err.message}) — wszystkie pliki trafią do środka modpacka`);
+  }
+
+  const zip = new AdmZip();
+  const files = [], seen = new Set();
+  let overrides = 0;
+  for (const f of local) {
+    if (seen.has(f.path)) continue; // ten sam mod w paczce i w mods/
+    seen.add(f.path);
+    const remote = f.sha1 && found[f.sha1];
+    if (remote) {
+      files.push({
+        path: f.path,
+        hashes: { sha1: remote.hashes.sha1, sha512: remote.hashes.sha512 },
+        downloads: [remote.url],
+        fileSize: remote.size,
+      });
+    } else {
+      zip.addFile(`overrides/${f.path}`, fs.readFileSync(path.join(dir, f.rel)));
+      overrides++;
+    }
+  }
+
+  const loaderKey = { fabric: "fabric-loader", forge: "forge", neoforge: "neoforge" }[info.loader];
+  const dependencies = { minecraft: info.gameVersion };
+  if (loaderKey && loaderVersion) dependencies[loaderKey] = loaderVersion;
+  const index = {
+    formatVersion: 1, game: "minecraft", versionId: new Date().toISOString().slice(0, 10),
+    name: info.title, summary: "Profil z launchera BobrMC", files, dependencies,
+  };
+  zip.addFile("modrinth.index.json", Buffer.from(JSON.stringify(index, null, 2)));
+  zip.addFile(PROFILE_MARKER, Buffer.from(JSON.stringify({
+    format: 1, title: info.title, gameVersion: info.gameVersion, loader: info.loader, pack: !!info.pack,
+    packFiles: local.filter(f => f.pack).map(f => f.path),
+  }, null, 2)));
+  await zip.writeZipPromise(file);
+  log(`[eksport] Zapisano ${info.title}: ${files.length} plików do pobrania z Modrinth, ${overrides} w środku → ${file}`);
+  return { file, title: info.title, downloads: files.length, overrides, worlds: !!withWorlds };
+}
+
+function readProfileMarker(zip) {
+  const entry = zip.getEntry(PROFILE_MARKER);
+  if (!entry || !zip.getEntry("modrinth.index.json")) return null;
+  try {
+    const marker = JSON.parse(zip.readAsText(entry));
+    checkProfileTarget(marker.gameVersion, marker.loader);
+    return marker;
+  } catch {
+    throw new Error("Plik profilu BobrMC jest uszkodzony");
+  }
+}
+
+async function importProfile(gameDir, zip, marker, { log, progress }) {
+  const index = JSON.parse(zip.readAsText("modrinth.index.json"));
+  const skip = new Set(marker.pack ? marker.packFiles || [] : []); // mody paczki zainstalują się przy starcie
+  const files = clientFiles(index).filter(f => !skip.has(f.path));
+  for (const f of files) {
+    f.downloads = allowedDownloads(f);
+    if (!f.downloads.length) throw new Error(`Profil pobiera ${f.path} z niedozwolonego adresu`);
+    if (!f.hashes || !f.hashes.sha1) throw new Error(`Profil nie podaje sumy kontrolnej dla ${f.path}`);
+  }
+  // nazwa zajęta → „PvP (2)”
+  const base = String(marker.title || "Profil").trim().slice(0, 34) || "Profil";
+  let name = base;
+  for (let i = 2; listModpacks(gameDir).some(m => m.kind === "profile" && m.title.toLowerCase() === name.toLowerCase()); i++) name = `${base} (${i})`;
+  const info = createProfile(gameDir, { name, gameVersion: marker.gameVersion, loader: marker.loader, pack: marker.pack });
+  const dir = modpackDir(gameDir, info.slug);
+  try {
+    let done = 0;
+    progress({ task: 0, total: files.length });
+    await pool(files, 8, async f => {
+      await downloadChecked(f, safeJoin(dir, f.path));
+      progress({ task: ++done, total: files.length });
+    });
+    copyOverrides(zip, dir, ["overrides/", "client-overrides/"]);
+  } catch (err) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    throw err;
+  }
+  const loader = { forge: "Forge", neoforge: "NeoForge", vanilla: "bez modów" }[info.loader] || "Fabric";
+  log(`[profil] Zaimportowano profil ${info.title} (Minecraft ${info.gameVersion}, ${loader}, ${files.length} plików)`);
+  return info;
+}
+
 function deleteModpack(gameDir, slug) {
   fs.rmSync(modpackDir(gameDir, slug), { recursive: true, force: true });
 }
 
 module.exports = {
   listModpacks, readModpack, searchModpacks, installModpack, importModpack,
-  createProfile, updateProfile, duplicateProfile, deleteModpack, modpackDir,
+  createProfile, updateProfile, duplicateProfile, exportProfile, deleteModpack, modpackDir,
 };

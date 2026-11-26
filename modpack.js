@@ -705,5 +705,5 @@ function removePack(instanceDir, target) {
 
 module.exports = {
   installPack, removePack, packName: PACK.name, forgePack, loaderFor, packFor, packModsDir, listMods, setModEnabled, searchMods, installOwnMod,
-  checkOwnUpdates, updateOwnMod, pool, sha1,
+  checkOwnUpdates, updateOwnMod, pool, sha1, readPackList,
 };

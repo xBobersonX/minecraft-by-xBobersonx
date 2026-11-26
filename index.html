@@ -382,6 +382,22 @@
     </div>
   </div>
 
+  <div class="overlay" id="backups" hidden>
+    <div class="dialog glass mods-dialog">
+      <div class="panel-title">
+        <span id="backups-title">Kopie zapasowe światów</span>
+        <button id="btn-close-backups" class="title-btn close" title="Zamknij">✕</button>
+      </div>
+      <form class="backups-add" id="backups-add">
+        <select id="backups-world"></select>
+        <button class="primary" type="submit" id="btn-backup-create">Zrób kopię</button>
+        <button type="button" id="btn-backups-folder" title="Otwórz folder z kopiami">Folder</button>
+      </form>
+      <ul id="backups-list"></ul>
+      <div id="backups-hint"></div>
+    </div>
+  </div>
+
   <div class="overlay" id="servers" hidden>
     <div class="dialog glass mods-dialog">
       <div class="panel-title">
