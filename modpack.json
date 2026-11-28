@@ -75,7 +75,8 @@
     "zoomify",
     "betterf3",
     "armor-hud",
-    "health-indicators"
+    "health-indicators",
+    "wavey-capes"
   ],
   "forge": {
     "1.8.9": {
@@ -84,7 +85,8 @@
       "mods": [
         "patcher",
         "entityculling",
-        "3dskinlayers"
+        "3dskinlayers",
+        "wavey-capes"
       ]
     }
   },
@@ -115,7 +117,8 @@
       "simple-voice-chat",
       "e4mc",
       "no-chat-reports",
-      "shulkerboxtooltip"
+      "shulkerboxtooltip",
+      "wavey-capes"
     ]
   },
   "neoforgeModern": {
@@ -149,12 +152,13 @@
       "e4mc",
       "no-chat-reports",
       "shulkerboxtooltip",
-      "notenoughcrashes"
+      "notenoughcrashes",
+      "wavey-capes"
     ]
   },
   "bundled": [
-    { "project": "bobrconfig", "file": "bundled/bobr-config-0.4.0-1.21.11.jar", "versions": ["1.21.11"] },
-    { "project": "bobrconfig", "file": "bundled/bobr-config-0.4.0-1.8.9.jar", "versions": ["1.8.9"] },
-    { "project": "bobrconfig", "file": "bundled/bobr-config-0.4.0-forge-1.21.11.jar", "versions": ["1.21.11"], "loader": "forge" }
+    { "project": "bobrconfig", "file": "bundled/bobr-config-0.5.0-1.21.11.jar", "versions": ["1.21.11"] },
+    { "project": "bobrconfig", "file": "bundled/bobr-config-0.5.0-1.8.9.jar", "versions": ["1.8.9"] },
+    { "project": "bobrconfig", "file": "bundled/bobr-config-0.5.0-forge-1.21.11.jar", "versions": ["1.21.11"], "loader": "forge" }
   ]
 }
