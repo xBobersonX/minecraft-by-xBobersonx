@@ -115,7 +115,127 @@ function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpack
     if (first) select.value = first.value;
   }
   shownVersion = select.value;
+  syncPickers();
 }
+
+// ---------- Wybór wersji i profilu (dwie listy przy „Graj”) ----------
+// Ukryta lista #version ma wszystkie pozycje (wersje, modpacki, profile) i zostaje źródłem prawdy.
+// Widoczne listy: #pick-version (wersje i modpacki) i #pick-profile („Domyślny” + profile tej wersji).
+const NO_BASE = "__profile"; // wersja, na której są tylko profile (bez paczki na liście)
+
+const isProfileValue = value => {
+  const [, instance] = String(value).split("|");
+  return !!instance && instance.startsWith("mp:") && (instanceInfo.get(instance.slice(3)) || {}).kind === "profile";
+};
+
+// Pozycja z listy wersji, pod którą jest profil: paczka tej wersji gry na tym samym loaderze
+// (Fabric i „bez modów” → paczka Fabric, Forge → nowy Forge albo paczka PvP 1.8.9, NeoForge → NeoForge)
+function baseFor(value) {
+  const [gameVersion, instance] = value.split("|");
+  const info = instanceInfo.get(instance.slice(3)) || {};
+  const values = [...$("version").options].map(o => o.value);
+  const order = info.loader === "neoforge" ? ["neoforge"]
+    : info.loader === "forge" ? (loaderSets.oldForge[gameVersion] ? ["pack"] : ["forge"])
+    : ["pack"];
+  return order.map(i => `${gameVersion}|${i}`).find(v => values.includes(v)) || `${gameVersion}|${NO_BASE}`;
+}
+
+// Profile pod daną pozycją listy wersji
+function profilesOf(base) {
+  return [...$("version").options].filter(o => isProfileValue(o.value) && baseFor(o.value) === base);
+}
+
+function syncPickers() {
+  const select = $("version");
+  const current = select.value;
+  const base = isProfileValue(current) ? baseFor(current) : current;
+
+  const pv = $("pick-version");
+  pv.innerHTML = "";
+  const added = new Set();
+  const add = (value, text) => {
+    if (added.has(value)) return;
+    added.add(value);
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = text;
+    pv.appendChild(opt);
+  };
+  for (const o of select.options) {
+    if (isProfileValue(o.value)) continue;
+    add(o.value, o.value === TOGGLE_VERSIONS ? o.textContent : o.textContent.replace(/^Minecraft /, ""));
+  }
+  // wersje, które mają tylko profile (np. profil na 1.20.1 przy krótkiej liście)
+  for (const o of select.options) {
+    if (!isProfileValue(o.value)) continue;
+    const own = baseFor(o.value);
+    if (own.endsWith(NO_BASE)) add(own, `${own.split("|")[0]} – tylko profile`);
+  }
+  // „Pokaż wszystkie wersje” zawsze na końcu
+  const toggle = [...pv.options].find(o => o.value === TOGGLE_VERSIONS);
+  if (toggle) pv.appendChild(toggle);
+  pv.value = base;
+
+  // profile: tylko dla wersji gry (modpacki z Modrinth mają własne mody i nie mają profili)
+  const pp = $("pick-profile");
+  pp.innerHTML = "";
+  const isModpack = base.includes("|mp:");
+  $("pick-profile-wrap").hidden = isModpack;
+  if (!base.endsWith(NO_BASE) && !isModpack) {
+    const opt = document.createElement("option");
+    opt.value = base;
+    opt.textContent = "Domyślny";
+    pp.appendChild(opt);
+  }
+  for (const o of profilesOf(base)) {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = instanceInfo.get(o.value.split("|mp:")[1]).title;
+    pp.appendChild(opt);
+  }
+  const newOpt = document.createElement("option");
+  newOpt.value = "__new";
+  newOpt.textContent = "+ Nowy profil…";
+  pp.appendChild(newOpt);
+  pp.value = current;
+}
+
+// Ustawia pozycję na ukrytej liście i robi to samo, co ręczna zmiana wersji
+function chooseVersion(value) {
+  const select = $("version");
+  if (![...select.options].some(o => o.value === value)) return;
+  select.value = value;
+  select.onchange();
+}
+
+$("pick-version").onchange = () => {
+  const value = $("pick-version").value;
+  if (value === TOGGLE_VERSIONS) {
+    settings.allVersions = !settings.allVersions;
+    fillVersions(...versionArgs);
+    persist();
+    const pv = $("pick-version");
+    if (pv.showPicker) { try { pv.showPicker(); } catch {} }
+    return;
+  }
+  if (value.endsWith(NO_BASE)) {
+    const first = profilesOf(value)[0];
+    if (first) chooseVersion(first.value);
+    return;
+  }
+  chooseVersion(value);
+};
+
+$("pick-profile").onchange = () => {
+  const value = $("pick-profile").value;
+  if (value === "__new") {
+    syncPickers(); // wraca do poprzedniego wyboru, dopóki profil nie powstanie
+    const gv = $("version").value.split("|")[0];
+    openProfileDialog(null, gv);
+    return;
+  }
+  chooseVersion(value);
+};
 
 // ---------- Skin (główka obok nicku) ----------
 
@@ -355,6 +475,7 @@ async function init() {
   });
 
   await loadVersions();
+  await ensureStarterProfiles();
   if (window.Home) window.Home.start(); // Home startuje, gdy są już ustawienia i lista wersji
 }
 
@@ -406,6 +527,7 @@ $("version").onchange = () => {
     return;
   }
   shownVersion = select.value;
+  syncPickers();
   persist();
   if (!$("btn-play").disabled) $("play-label").textContent = playLabel();
   homeRefresh("version");
@@ -521,6 +643,7 @@ function renderMods() {
   if (isContentTab(modsTab)) return renderContent();
   const query = $("mods-search").value.trim().toLowerCase();
   const list = $("mods-list");
+  list.classList.add("mod-grid");
   const mods = modsData[modsTab].filter(m => !query || m.title.toLowerCase().includes(query) || m.file.toLowerCase().includes(query));
   list.innerHTML = "";
 
@@ -533,25 +656,45 @@ function renderMods() {
     list.appendChild(li);
   }
 
+  // kafelki: ikona, nazwa, opis, wersja i włącznik
   for (const mod of mods) {
     const li = document.createElement("li");
+    li.className = "mod-card";
     li.classList.toggle("off", !mod.enabled);
     li.title = mod.file;
 
+    const head = document.createElement("div");
+    head.className = "mod-card-head";
+    const icon = document.createElement(mod.icon ? "img" : "div");
+    icon.className = "mod-icon";
+    if (mod.icon) {
+      icon.src = mod.icon;
+      icon.alt = "";
+    } else {
+      icon.textContent = (mod.title || "?").trim().charAt(0).toUpperCase();
+    }
     const box = document.createElement("input");
     box.type = "checkbox";
+    box.className = "switch";
     box.checked = mod.enabled;
+    box.title = mod.enabled ? "Wyłącz" : "Włącz";
+    head.append(icon, box);
 
-    const title = document.createElement("span");
+    const title = document.createElement("div");
     title.className = "mod-title";
     title.textContent = mod.title;
-    li.append(box, title);
 
+    const desc = document.createElement("div");
+    desc.className = "mod-desc";
+    desc.textContent = mod.description || "";
+
+    const foot = document.createElement("div");
+    foot.className = "mod-foot";
     if (mod.library) {
       const tag = document.createElement("span");
       tag.className = "mod-tag";
       tag.textContent = "biblioteka";
-      li.appendChild(tag);
+      foot.appendChild(tag);
     }
     // własny mod, który i tak jest w paczce — można go usunąć z folderu
     if (modsTab === "own" && mod.modId && modsData.pre.some(p => p.modId === mod.modId)) {
@@ -559,7 +702,7 @@ function renderMods() {
       tag.className = "mod-tag";
       tag.textContent = "jest też w paczce";
       tag.title = "Ten mod jest już w paczce xBobersonx Mods — kopia we własnych modach nie jest potrzebna";
-      li.appendChild(tag);
+      foot.appendChild(tag);
     }
     const update = modsTab === "own" && modUpdates.get(mod.key);
     const version = document.createElement("span");
@@ -569,7 +712,7 @@ function renderMods() {
       version.classList.add("has-update");
       version.title = update.changelog || "";
     }
-    li.appendChild(version);
+    foot.appendChild(version);
 
     if (update) {
       const btn = document.createElement("button");
@@ -582,8 +725,9 @@ function renderMods() {
         await updateOneMod(update);
         await loadMods();
       };
-      li.appendChild(btn);
+      foot.appendChild(btn);
     }
+    li.append(head, title, desc, foot);
 
     const toggle = async () => {
       const enabled = !mod.enabled;
@@ -691,6 +835,7 @@ async function doSearch() {
 
 function renderSearch() {
   const list = $("mods-list");
+  list.classList.remove("mod-grid");
   list.innerHTML = "";
   if (!searchResults || searchResults.length === 0) {
     const li = document.createElement("li");
@@ -779,6 +924,7 @@ function contentRow(item, type) {
 function renderContent() {
   const type = modsTab;
   const list = $("mods-list");
+  list.classList.remove("mod-grid");
   list.innerHTML = "";
 
   list.appendChild(section(`Zainstalowane (${contentInstalled.length})`));
@@ -1608,6 +1754,177 @@ $("btn-modpacks").onclick = () => {
 };
 $("btn-close-modpacks").onclick = () => { $("modpacks").hidden = true; };
 
+// ---------- Strona „Profile” (kafelki) ----------
+const profileValue = mp => `${mp.gameVersion}|mp:${mp.slug}`;
+
+async function loadProfilesPage() {
+  try { playData = await window.api.getPlaytime(); } catch {}
+  modpacksInstalled = await window.api.listModpacks();
+  renderProfilesPage();
+}
+
+function renderProfilesPage() {
+  const grid = $("profiles-grid");
+  grid.innerHTML = "";
+  const profiles = modpacksInstalled.filter(m => m.kind === "profile");
+  for (const mp of profiles) grid.appendChild(profileCard(mp));
+  // kafelek „Nowy profil”
+  const add = document.createElement("li");
+  add.className = "profile-card profile-add";
+  const plus = document.createElement("span");
+  plus.className = "plus";
+  plus.textContent = "+";
+  const label = document.createElement("span");
+  label.textContent = "Nowy profil";
+  add.append(plus, label);
+  add.onclick = () => openProfileDialog(null, $("version").value.split("|")[0]);
+  grid.appendChild(add);
+}
+
+// „1 mod”, „2 mody”, „5 modów”
+function modsWord(count) {
+  if (count === 1) return "mod";
+  const tens = count % 100, ones = count % 10;
+  return ones >= 2 && ones <= 4 && (tens < 10 || tens >= 20) ? "mody" : "modów";
+}
+
+function profileCard(mp) {
+  const li = document.createElement("li");
+  li.className = "profile-card";
+  const selected = $("version").value === profileValue(mp);
+  li.classList.toggle("selected", selected);
+
+  const head = document.createElement("div");
+  head.className = "pc-head";
+  const icon = document.createElement("img");
+  icon.className = "pc-icon";
+  icon.src = mp.icon || "assets/icon.png";
+  icon.alt = "";
+  const titles = document.createElement("div");
+  titles.className = "pc-titles";
+  const title = document.createElement("div");
+  title.className = "pc-title";
+  title.textContent = mp.title;
+  const sub = document.createElement("div");
+  sub.className = "pc-sub";
+  sub.textContent = `Minecraft ${mp.gameVersion} · ${mp.loader === "vanilla" ? "bez modów" : LOADER_NAMES[mp.loader] || "Fabric"}`;
+  titles.append(title, sub);
+  head.append(icon, titles);
+  if (selected) {
+    const badge = document.createElement("span");
+    badge.className = "pc-badge";
+    badge.textContent = "Wybrany";
+    head.appendChild(badge);
+  }
+
+  const stats = document.createElement("div");
+  stats.className = "pc-stats";
+  const played = instancePlay(`mp:${mp.slug}`);
+  const mods = document.createElement("span");
+  mods.textContent = "…";
+  const time = document.createElement("span");
+  time.textContent = played.seconds ? `grano ${formatDuration(played.seconds)}` : "jeszcze nie grano";
+  stats.append(mods, time);
+  if (mp.pack) {
+    const pack = document.createElement("span");
+    const pvp = mp.loader === "forge" && loaderSets.oldForge[mp.gameVersion];
+    pack.textContent = `+ paczka ${pvp || loaderSets.packName || "xBobersonx"}`;
+    stats.appendChild(pack);
+  }
+  // liczba włączonych modów (własne + z paczki, bez bibliotek) — liczona w tle
+  window.api.listMods({ version: mp.gameVersion, instance: `mp:${mp.slug}` }).then(data => {
+    const count = [...data.own, ...(mp.pack ? data.pre : [])].filter(m => m.enabled && !m.library).length;
+    mods.textContent = count || !mp.pack ? `${count} ${modsWord(count)}` : "mody po pierwszym uruchomieniu";
+  }).catch(() => { mods.textContent = ""; });
+
+  const buttons = document.createElement("div");
+  buttons.className = "pc-buttons";
+  const play = document.createElement("button");
+  play.className = "primary";
+  play.textContent = "Graj";
+  play.disabled = $("btn-play").disabled;
+  play.onclick = async () => {
+    await loadVersions(profileValue(mp));
+    closeOverlays();
+    startGame();
+  };
+  const modsBtn = document.createElement("button");
+  modsBtn.textContent = "Mody";
+  modsBtn.onclick = async () => {
+    await loadVersions(profileValue(mp));
+    closeOverlays();
+    $("btn-mods").click();
+  };
+  const edit = document.createElement("button");
+  edit.textContent = "Edytuj";
+  edit.onclick = () => openProfileDialog(mp);
+  const more = document.createElement("button");
+  more.className = "more";
+  more.textContent = "⋯";
+  more.title = "Więcej";
+  more.onclick = async () => {
+    const action = await window.api.modpackMenu({ profile: true });
+    if (!action) return;
+    if (action === "backups") return openBackups(mp);
+    const hint = $("profiles-hint");
+    more.disabled = true;
+    try {
+      if (action === "delete") {
+        if (!(await window.api.deleteModpack({ slug: mp.slug, title: mp.title }))) return;
+        hint.textContent = `Usunięto ${mp.title}`;
+      } else if (action === "duplicate") {
+        hint.textContent = `Kopiowanie ${mp.title}…`;
+        const info = await window.api.duplicateProfile({ slug: mp.slug });
+        hint.textContent = `Utworzono kopię: ${info.title}`;
+      } else {
+        hint.textContent = `Eksportowanie ${mp.title}…`;
+        const result = await window.api.exportProfile({ slug: mp.slug });
+        hint.textContent = result
+          ? `Zapisano ${result.title}${result.worlds ? " ze światami" : ""} — plik możesz wysłać znajomemu`
+          : "";
+      }
+      await loadVersions();
+      await loadProfilesPage();
+    } catch (err) {
+      hint.textContent = cleanError(err);
+    } finally {
+      more.disabled = false;
+    }
+  };
+  buttons.append(play, modsBtn, edit, more);
+  li.append(head, stats, buttons);
+  return li;
+}
+
+$("btn-profiles").onclick = () => {
+  $("profiles-hint").textContent = "";
+  $("profiles").hidden = false;
+  loadProfilesPage();
+};
+$("btn-close-profiles").onclick = () => { $("profiles").hidden = true; };
+
+// Dwa gotowe profile przy pierwszym uruchomieniu nowej wersji launchera (można je potem usunąć)
+const STARTER_PROFILES = [
+  { name: "PvP 1.8.9", gameVersion: "1.8.9", loader: "forge" },
+  { name: "Survival 1.21.11", gameVersion: "1.21.11", loader: "fabric" },
+];
+async function ensureStarterProfiles() {
+  if (settings.starterProfiles) return;
+  try {
+    const existing = (await window.api.listModpacks()).filter(m => m.kind === "profile");
+    for (const p of STARTER_PROFILES) {
+      if (existing.some(m => m.title === p.name)) continue;
+      if (!profileLoaders(p.gameVersion).includes(p.loader)) return; // bez internetu nie znamy loaderów — spróbujemy następnym razem
+      await window.api.createProfile({ ...p, pack: true, ram: null, javaArgs: "", javaPath: null });
+    }
+    settings.starterProfiles = true;
+    persist();
+    await loadVersions();
+  } catch (err) {
+    log(`Nie udało się utworzyć gotowych profili: ${cleanError(err)}`);
+  }
+}
+
 // ---------- Okno „Nowy profil” ----------
 
 // Loadery działające na danej wersji gry
@@ -1659,7 +1976,7 @@ let profileEditing = null; // edytowany profil albo null przy tworzeniu nowego
 
 $("btn-profile-new").onclick = () => openProfileDialog(null);
 
-function openProfileDialog(existing) {
+function openProfileDialog(existing, gameVersion) {
   profileEditing = existing;
   const select = $("profile-version");
   select.innerHTML = "";
@@ -1694,6 +2011,8 @@ function openProfileDialog(existing) {
     updateProfilePack();
     $("profile-pack").checked = !!existing.pack && !$("profile-pack").disabled;
   } else {
+    // nowy profil z listy przy „Graj” — od razu na wybranej wersji
+    if (gameVersion && [...select.options].some(o => o.value === gameVersion)) select.value = gameVersion;
     $("profile-pack").checked = true;
     fillProfileLoaders();
   }
@@ -1804,6 +2123,7 @@ $("profile-form").onsubmit = async event => {
     const wasSelected = editing && current === `${editing.gameVersion}|mp:${editing.slug}`;
     await loadVersions(!editing || wasSelected ? `${info.gameVersion}|mp:${info.slug}` : undefined);
     await loadModpacks();
+    if (!$("profiles").hidden) await loadProfilesPage();
     $("modpacks-hint").textContent = editing
       ? `Zapisano profil ${info.title}`
       : `Utworzono profil ${info.title} — wybrany na liście wersji, kliknij „Graj”`;
@@ -1994,7 +2314,7 @@ $("lang").onchange = () => {
 };
 
 // Boczny pasek: jedno okno naraz, podświetlony przycisk otwartego okna
-const PAGES = { "btn-modpacks": "modpacks", "btn-mods": "mods", "btn-servers": "servers", "btn-settings": "settings" };
+const PAGES = { "btn-modpacks": "modpacks", "btn-profiles": "profiles", "btn-mods": "mods", "btn-servers": "servers", "btn-settings": "settings" };
 const overlays = [...document.querySelectorAll(".overlay")];
 function closeOverlays() {
   overlays.forEach(o => { o.hidden = true; });

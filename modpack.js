@@ -467,6 +467,18 @@ function renameMod(dir, jarName, enabled) {
   if (!enabled && fs.existsSync(on)) fs.renameSync(on, off);
 }
 
+// Ikona moda z pliku .jar jako data URL (małe PNG; duże pomijamy, żeby nie zapychać pamięci)
+function jarIcon(zip, name) {
+  if (!name || typeof name !== "string") return null;
+  try {
+    const e = zip.getEntry(name.replace(/^\//, ""));
+    if (!e || e.header.size > 256 * 1024 || !/\.png$/i.test(name)) return null;
+    return "data:image/png;base64," + e.getData().toString("base64");
+  } catch {
+    return null;
+  }
+}
+
 function describe(file) {
   const stat = fs.statSync(file);
   const key = `${file}|${stat.mtimeMs}`;
@@ -476,12 +488,13 @@ function describe(file) {
       const zip = new AdmZip(file);
       if (zip.getEntry("fabric.mod.json")) {
         const meta = JSON.parse(zip.readAsText("fabric.mod.json"));
-        info = { title: meta.name || meta.id, version: meta.version, modId: meta.id };
+        const icon = typeof meta.icon === "string" ? meta.icon : meta.icon && Object.values(meta.icon).pop();
+        info = { title: meta.name || meta.id, version: meta.version, modId: meta.id, description: meta.description, icon: jarIcon(zip, icon) };
       } else if (zip.getEntry("mcmod.info")) {
         // Forge 1.8.9: lista modów albo { modList: [...] }
         const raw = JSON.parse(zip.readAsText("mcmod.info"));
         const meta = (Array.isArray(raw) ? raw : raw.modList || [])[0];
-        if (meta) info = { title: meta.name || meta.modid, version: meta.version, modId: meta.modid };
+        if (meta) info = { title: meta.name || meta.modid, version: meta.version, modId: meta.modid, description: meta.description, icon: jarIcon(zip, meta.logoFile) };
       } else if (zip.getEntry("META-INF/mods.toml") || zip.getEntry("META-INF/neoforge.mods.toml")) {
         // nowy Forge i NeoForge: pierwszy [[mods]] z mods.toml; wersja bywa „${file.jarVersion}” — wtedy z MANIFEST.MF
         const toml = zip.readAsText(zip.getEntry("META-INF/neoforge.mods.toml") ? "META-INF/neoforge.mods.toml" : "META-INF/mods.toml");
@@ -493,7 +506,9 @@ function describe(file) {
           version = (/^Implementation-Version:\s*(.+)$/m.exec(manifest) || [])[1] || "";
         }
         const modId = field("modId");
-        if (modId) info = { title: field("displayName") || modId, version: version.trim(), modId };
+        const description = (/^\s*description\s*=\s*'''([\s\S]*?)'''/m.exec(block) || /^\s*description\s*=\s*"([^"]*)"/m.exec(block) || [])[1];
+        const logo = field("logoFile") || (/^\s*logoFile\s*=\s*["']([^"']*)["']/m.exec(toml) || [])[1];
+        if (modId) info = { title: field("displayName") || modId, version: version.trim(), modId, description: description && description.trim(), icon: jarIcon(zip, logo) };
       }
     } catch {}
     infoCache.set(key, info);

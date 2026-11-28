@@ -31,6 +31,7 @@
     <div class="side-logo"><img src="assets/icon.png" alt="BobrMC"><span class="sr" id="app-version"></span></div>
     <button class="side-btn active" id="btn-home" data-tip="Home"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span class="tip">Home</span></button>
     <button class="side-btn" id="btn-modpacks" data-tip="Wersje"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg><span class="tip">Wersje</span></button>
+    <button class="side-btn" id="btn-profiles" data-tip="Profile"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="tip">Profile</span></button>
     <button class="side-btn" id="btn-mods" data-tip="Mody"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="tip">Mody</span></button>
     <button class="side-btn" id="btn-servers" data-tip="Serwery"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></svg><span class="tip">Serwery</span></button>
     <div class="grow"></div>
@@ -39,66 +40,67 @@
   </nav>
 
   <main class="home" id="home">
-    <div class="home-grid">
-      <!-- lewa kolumna -->
-      <div class="col-main">
-        <div class="home-date" id="home-date"></div>
+    <!-- tło na cały ekran główny -->
+    <div class="stage-bg"><canvas id="bg"></canvas><img id="bg-img" alt=""></div>
 
-        <section class="card hero-card" id="hero">
-          <div class="hero-bg"><canvas id="bg"></canvas><img id="bg-img" alt=""></div>
-          <div class="hero-skin" id="hero-skin"><div class="skeleton skin-sk"></div></div>
-          <div class="hero-body">
-            <div class="hero-nick" id="hero-nick"><div class="skeleton line w-40 h-32"></div></div>
-            <div class="hero-meta">
+    <div class="stage">
+      <!-- środek: logo, gracz, przycisk Graj -->
+      <section class="stage-main" id="hero">
+        <div class="hero-skin" id="hero-skin"><div class="skeleton skin-sk"></div></div>
+        <div class="stage-center">
+          <div class="home-date" id="home-date"></div>
+          <div class="brand"><img src="assets/icon.png" alt=""><span>Bobr<b>MC</b></span></div>
+          <div class="hero-nick" id="hero-nick"><div class="skeleton line w-40 h-32"></div></div>
+          <div class="hero-meta">
               <span class="meta" id="meta-version"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 8.7 5 8.7-5"/></svg><span class="meta-text"><div class="skeleton line w-80"></div></span></span>
               <span class="meta" id="meta-mods"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></svg><span class="meta-text"><div class="skeleton line w-60"></div></span></span>
               <span class="meta" id="meta-time"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg><span class="meta-text"><div class="skeleton line w-60"></div></span></span>
             </div>
-            <div class="play-row">
+          <div class="play-row">
               <button id="btn-play" class="play-btn primary">
                 <svg class="icon fill" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5v17a1 1 0 0 0 1.5.86l14-8.5a1 1 0 0 0 0-1.72l-14-8.5A1 1 0 0 0 6 3.5z"/></svg>
                 <span class="play-text"><span id="play-label">Graj</span><small id="play-sub"></small></span>
               </button>
-              <label class="version-pick" title="Wybierz wersję">
-                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
-                <select id="version"><option>Ładowanie…</option></select>
-              </label>
+              <select id="version" hidden><option>Ładowanie…</option></select>
             </div>
-            <div class="progress" hidden><div id="bar"></div></div>
-            <div id="status"></div>
-            <div class="hero-last" id="hero-last"></div>
+          <!-- wersja i profil to dwa osobne wybory (lista #version zostaje jako ukryte źródło prawdy) -->
+          <div class="pick-row">
+            <label class="pick" title="Wybierz wersję">
+              <span class="pick-label">Wersja</span>
+              <select id="pick-version"></select>
+            </label>
+            <label class="pick" id="pick-profile-wrap" title="Wybierz profil">
+              <span class="pick-label">Profil</span>
+              <select id="pick-profile"></select>
+            </label>
           </div>
-        </section>
+          <div class="progress" hidden><div id="bar"></div></div>
+          <div id="status"></div>
+          <div class="hero-last" id="hero-last"></div>
+        </div>
+      </section>
 
+      <!-- dół: szybkie granie i aktualności -->
+      <section class="stage-bottom">
+        <div class="section-header"><h2>Ostatnio grane</h2></div>
         <div class="quick-row" id="quick-row">
           <div class="card quick-card"><div class="skeleton qc-icon"></div><div class="qc-body"><div class="skeleton line w-70"></div><div class="skeleton line w-40"></div></div></div>
           <div class="card quick-card"><div class="skeleton qc-icon"></div><div class="qc-body"><div class="skeleton line w-70"></div><div class="skeleton line w-40"></div></div></div>
           <div class="card quick-card"><div class="skeleton qc-icon"></div><div class="qc-body"><div class="skeleton line w-70"></div><div class="skeleton line w-40"></div></div></div>
         </div>
-
-        <section>
-          <div class="section-header"><h2>Co nowego</h2><button class="link" id="news-all">Zobacz wszystkie ›</button></div>
-          <div class="news-row" id="news-row">
+        <div class="section-header"><h2>Co nowego</h2><button class="link" id="news-all">Zobacz wszystkie ›</button></div>
+        <div class="news-row" id="news-row">
             <div class="card news-card"><div class="skeleton nc-fill"></div></div>
             <div class="card news-card"><div class="skeleton nc-fill"></div></div>
           </div>
-        </section>
-      </div>
+      </section>
+    </div>
 
-      <!-- prawa kolumna -->
-      <aside class="col-side">
-        <section>
-          <div class="section-header"><h2>Serwery</h2><button class="link" id="servers-all">Zobacz wszystkie ›</button></div>
-          <div class="card list-card" id="home-servers">
-            <div class="server-row"><div class="skeleton sr-icon"></div><div class="sr-body"><div class="skeleton line w-60"></div><div class="skeleton line w-40"></div></div></div>
-            <div class="server-row"><div class="skeleton sr-icon"></div><div class="sr-body"><div class="skeleton line w-60"></div><div class="skeleton line w-40"></div></div></div>
-            <div class="server-row"><div class="skeleton sr-icon"></div><div class="sr-body"><div class="skeleton line w-60"></div><div class="skeleton line w-40"></div></div></div>
-          </div>
-        </section>
-
-        <section>
-          <div class="section-header"><h2>Konto</h2></div>
-          <div class="card account-home" id="account-home">
+    <!-- prawy panel: konto i serwery -->
+    <aside class="stage-side glass">
+      <section>
+        <div class="section-header"><h2>Konto</h2></div>
+        <div class="card account-home" id="account-home">
             <div class="account-row">
               <canvas id="head" width="24" height="24" title="Twój skin"></canvas>
               <div class="account-text">
@@ -115,9 +117,16 @@
               <button id="home-logout">Wyloguj</button>
             </div>
           </div>
-        </section>
-      </aside>
-    </div>
+      </section>
+      <section>
+        <div class="section-header"><h2>Serwery</h2><button class="link" id="servers-all">Zobacz wszystkie ›</button></div>
+        <div class="card list-card" id="home-servers">
+            <div class="server-row"><div class="skeleton sr-icon"></div><div class="sr-body"><div class="skeleton line w-60"></div><div class="skeleton line w-40"></div></div></div>
+            <div class="server-row"><div class="skeleton sr-icon"></div><div class="sr-body"><div class="skeleton line w-60"></div><div class="skeleton line w-40"></div></div></div>
+            <div class="server-row"><div class="skeleton sr-icon"></div><div class="sr-body"><div class="skeleton line w-60"></div><div class="skeleton line w-40"></div></div></div>
+          </div>
+      </section>
+    </aside>
   </main>
 
   <div class="update-bar glass" id="update-bar" hidden>
@@ -359,6 +368,18 @@
       <ul id="modpacks-list"></ul>
       <div class="progress" id="modpacks-progress" hidden><div id="modpacks-bar"></div></div>
       <div id="modpacks-hint"></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="profiles" hidden>
+    <div class="dialog glass profiles-dialog">
+      <div class="panel-title">
+        <span>Profile</span>
+        <button id="btn-close-profiles" class="title-btn close" title="Zamknij">✕</button>
+      </div>
+      <p class="note profiles-note">Każdy profil ma własne mody, światy i ustawienia. Wybierasz go przy przycisku „Graj”, obok wersji.</p>
+      <ul id="profiles-grid"></ul>
+      <div id="profiles-hint"></div>
     </div>
   </div>
 
