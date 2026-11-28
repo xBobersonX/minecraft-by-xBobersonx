@@ -43,7 +43,14 @@ const instanceInfo = new Map();
 
 const LOADER_NAMES = { fabric: "Fabric", forge: "Forge", neoforge: "NeoForge", vanilla: "bez modów" };
 
+// Polecane wersje z modem Bobr Config. Reszta jest schowana pod „Pokaż wszystkie wersje”
+const FEATURED_VERSIONS = ["1.8.9", "1.21.11"];
+const TOGGLE_VERSIONS = "__wersje";
+let versionArgs = null; // ostatnie dane listy, żeby ją przerysować po przełączeniu
+let shownVersion = "";  // ostatnio wybrana pozycja
+
 function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpacks = [], forgeVersions = {}, forgeModern = new Set(), neoforge = new Set()) {
+  versionArgs = [versions, fabricVersions, packName, onlyInstalled, modpacks, forgeVersions, forgeModern, neoforge];
   loaderSets = { versions, fabric: fabricVersions, oldForge: forgeVersions, forge: forgeModern, neoforge, packName };
   instanceInfo.clear();
   const select = $("version");
@@ -62,31 +69,52 @@ function fillVersions(versions, fabricVersions, packName, onlyInstalled, modpack
     }
     select.appendChild(opt);
   }
+  // krótka lista: polecane wersje i ta, którą gracz ma wybraną; pełna po kliknięciu ostatniej pozycji
+  const all = !!settings.allVersions;
+  const current = shownVersion || settings.version || "";
+  let hidden = 0;
+  const visible = (value, featured) => {
+    if (all || featured || value === current) return true;
+    hidden++;
+    return false;
+  };
   for (const v of versions) {
     if (v.type !== "release") continue;
+    const featured = FEATURED_VERSIONS.includes(v.id);
     const forgePackName = forgeVersions[v.id];
-    if ((fabricVersions.has(v.id) || forgePackName) && !(onlyInstalled && !onlyInstalled.includes(v.id))) {
+    if ((fabricVersions.has(v.id) || forgePackName) && !(onlyInstalled && !onlyInstalled.includes(v.id)) && visible(`${v.id}|pack`, featured)) {
       const opt = document.createElement("option");
       opt.value = `${v.id}|pack`;
       opt.textContent = forgePackName ? `Minecraft ${v.id} – ${forgePackName} (Forge)` : `Minecraft ${v.id} – ${packName}`;
       select.appendChild(opt);
     }
-    if (forgeModern.has(v.id) && !(onlyInstalled && !onlyInstalled.includes(`forge:${v.id}`))) {
+    if (forgeModern.has(v.id) && !(onlyInstalled && !onlyInstalled.includes(`forge:${v.id}`)) && visible(`${v.id}|forge`, v.id === "1.21.11")) {
       const opt = document.createElement("option");
       opt.value = `${v.id}|forge`;
       opt.textContent = `Minecraft ${v.id} – ${packName} (Forge)`;
       select.appendChild(opt);
     }
-    if (neoforge.has(v.id) && !(onlyInstalled && !onlyInstalled.includes(`neoforge:${v.id}`))) {
+    if (neoforge.has(v.id) && !(onlyInstalled && !onlyInstalled.includes(`neoforge:${v.id}`)) && visible(`${v.id}|neoforge`, false)) {
       const opt = document.createElement("option");
       opt.value = `${v.id}|neoforge`;
       opt.textContent = `Minecraft ${v.id} – ${packName} (NeoForge)`;
       select.appendChild(opt);
     }
   }
-  if (settings.version && select.querySelector(`option[value="${settings.version}"]`)) {
-    select.value = settings.version;
+  if (all || hidden) {
+    const opt = document.createElement("option");
+    opt.value = TOGGLE_VERSIONS;
+    opt.textContent = all ? "▲ Pokaż tylko polecane wersje" : "▼ Pokaż wszystkie wersje…";
+    select.appendChild(opt);
   }
+  if (current && select.querySelector(`option[value="${current}"]`)) {
+    select.value = current;
+  } else {
+    // bez zapisanego wyboru: najnowsza polecana wersja
+    const first = [...select.options].find(o => o.value !== TOGGLE_VERSIONS);
+    if (first) select.value = first.value;
+  }
+  shownVersion = select.value;
 }
 
 // ---------- Skin (główka obok nicku) ----------
@@ -345,8 +373,10 @@ async function loadVersions(select) {
     if (!$("btn-play").disabled) $("play-label").textContent = playLabel();
     homeRefresh("version");
     if (select) {
-      $("version").value = select;
+      shownVersion = select;
+      fillVersions(...versionArgs); // wybrana pozycja musi być na liście, także gdy nie jest polecana
       persist();
+      homeRefresh("version");
     }
     if (offline) {
       setStatus(installed.length || modpacks.length
@@ -366,6 +396,16 @@ $("nick").onchange = () => {
   renderAccounts();
 };
 $("version").onchange = () => {
+  const select = $("version");
+  if (select.value === TOGGLE_VERSIONS) {
+    // to nie jest wersja: przełączamy długość listy i zostajemy przy poprzednim wyborze
+    settings.allVersions = !settings.allVersions;
+    fillVersions(...versionArgs);
+    persist();
+    if (select.showPicker) { try { select.showPicker(); } catch {} }
+    return;
+  }
+  shownVersion = select.value;
   persist();
   if (!$("btn-play").disabled) $("play-label").textContent = playLabel();
   homeRefresh("version");
